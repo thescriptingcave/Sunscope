@@ -135,7 +135,19 @@ token_works() {
 }
 
 for name in telegraf-write grafana-read api-read; do
+  # The catalog name and the filename are independent, and conflating them is
+  # what made this fail silently.
+  #
+  # InfluxDB stores only a hash of a token, so if the catalog still has an entry
+  # for this name the old plaintext cannot be recovered and a new token has to be
+  # created under a *fresh catalog name*. Writing it to a matching timestamped
+  # FILENAME was the bug: nothing ever looks for `api-read-1790457444.token`, so
+  # the API fell back to the environment and every request came back 401 while
+  # this script cheerfully reported "created api-read (verified)".
+  #
+  # So: the catalog name varies when it must, the filename never does.
   out="${SECRETS_DIR}/${name}.token"
+  catalog_name="$name"
 
   if [[ -s "$out" ]] && token_works "$(cat "$out")"; then
     echo "    ${name} exists and is valid"
@@ -144,11 +156,8 @@ for name in telegraf-write grafana-read api-read; do
   if [[ -s "$out" ]]; then
     echo "    ${name} present but rejected; regenerating"
   fi
-  # If the old name is still in the catalog, its plaintext is unrecoverable
-  # (InfluxDB stores only a hash), so create under a fresh name.
   if influx show tokens 2>/dev/null | grep -q "$name"; then
-    name="${name}-$(date +%s)"
-    out="${SECRETS_DIR}/${name}.token"
+    catalog_name="${name}-$(date +%s)"
   fi
 
   # The token must be created ONLINE so the server registers it.
@@ -158,7 +167,7 @@ for name in telegraf-write grafana-read api-read; do
   # about: every subsequent request with it returns 401. Verified against
   # influxdb:3.11-core. So the token is read from stdout instead, which means
   # stripping the ANSI colour codes the CLI wraps around it.
-  created=$(influxdb3 create token --admin --name "$name" --host "$URL" \
+  created=$(influxdb3 create token --admin --name "$catalog_name" --host "$URL" \
     --token "$ADMIN_TOKEN" --tls-no-verify 2>/dev/null)
   printf '%s' "$created" | grep -oE 'apiv3_[A-Za-z0-9_-]+' | head -1 > "$out"
 
@@ -170,7 +179,19 @@ for name in telegraf-write grafana-read api-read; do
     echo "    FAILED: new token for ${name} was rejected by the server" >&2
     exit 1
   fi
-  chmod 600 "$out"
+  # 0644, not 0600. This is the line that decides whether anything outside the
+  # container can use the token at all.
+  #
+  # This container owns the file it just wrote, so it is the only party that can
+  # set the mode -- the host user cannot chmod a file it does not own, which is
+  # why bootstrap cannot repair this afterwards. At 0600 the token is invisible to
+  # everything on the host, and the first thing that touches it from out there --
+  # the test suite -- fails with a bare 401 that points nowhere near the cause.
+  #
+  # 0600 was the right instinct and is wrong here only because the file is a
+  # bind mount rather than private container state. Grafana reads its own token
+  # from the environment for the same reason: it cannot read files.
+  chmod 644 "$out"
   echo "    created ${name} (verified)"
 done
 
