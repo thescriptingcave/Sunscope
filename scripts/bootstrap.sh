@@ -255,6 +255,11 @@ run_tests() {
   fi
   node scripts/browser/check-ui.js \
     || die "the PWA did not render, or its live feed did not come up"
+
+  # docs/sql is generated from docs/06-sql-examples.md, so a stale file means the
+  # runnable copies and the teaching document have diverged.
+  uv run python scripts/export-sql.py --check \
+    || die "docs/sql is out of date; run: uv run python scripts/export-sql.py"
 }
 
 usage() {

@@ -478,3 +478,94 @@ def test_alerts_endpoint_surfaces_a_fired_alert(client: TestClient):
     assert stats["alerts_fired"] == 1
     assert stats["received"] == 2
     assert stats["errors"] == 0
+
+
+# --- /api/explore locality guard -------------------------------------------
+
+
+def test_local_address_predicate_covers_docker_bridge():
+    """Regression: the guard rejected every real request.
+
+    Docker rewrites the source address when it forwards a published port, so a
+    request from the host reaches the API as the bridge gateway -- 172.22.0.1 --
+    not 127.0.0.1. The old check against ("127.0.0.1", "::1") therefore rejected
+    100 % of live traffic, making this endpoint, the documented replacement for
+    Grafana's Explorer, unusable. The test suite missed it because TestClient
+    pins the peer to 127.0.0.1 and never reproduces the deployment's path.
+    """
+    from solar_api.main import _is_local_address
+
+    # Must accept: loopback, the Docker bridge, and sibling containers.
+    for host in ("127.0.0.1", "::1", "172.22.0.1", "172.17.0.2", "192.168.1.5",
+                 "10.0.0.3", "169.254.1.1", None):
+        assert _is_local_address(host) is True, host
+
+    # Must refuse: anything routable, and hostnames that are not provably local.
+    for host in ("8.8.8.8", "203.0.113.9", "198.51.100.1", "192.0.2.1",
+                 "224.0.0.1", "example.com", "not-an-ip"):
+        assert _is_local_address(host) is False, host
+
+
+def test_documentation_ranges_are_not_treated_as_local():
+    """`ipaddress.is_private` covers the documentation ranges too.
+
+    It is the obvious way to write this check and it is over-permissive:
+    203.0.113.0/24 and 198.51.100.0/24 are TEST-NET ranges, and a security
+    guard should not widen to accommodate them.
+    """
+    from solar_api.main import _is_local_address
+
+    assert _is_local_address("203.0.113.9") is False
+    assert _is_local_address("198.51.100.1") is False
+    assert _is_local_address("192.0.2.1") is False
+
+
+def test_explore_rejects_a_bridge_address_under_the_old_rule():
+    """Pins the exact string the API logs, so the fix cannot silently regress."""
+    from solar_api.main import _is_local_address
+
+    # This is the address uvicorn recorded for a request made from the host.
+    assert "172.22.0.1" not in ("127.0.0.1", "::1")
+    assert _is_local_address("172.22.0.1") is True
+
+
+def test_explore_accepts_parameter_bindings(client: TestClient):
+    """The exploration surface could not run a parameterised query at all.
+
+    It took only `sql`, so every query a user typed had to inline its literals
+    -- the one practice the parameter binding exists to prevent. The endpoint
+    could not even demonstrate the mechanism it relies on for safety.
+    """
+    token = login(client)
+
+    response = client.get(
+        "/api/explore",
+        params={"sql": "SELECT COUNT(*) AS n FROM inverter_telemetry WHERE site = $site",
+                "params": json.dumps({"site": "mojave"})},
+        headers=auth(token),
+    )
+    assert response.status_code == 200, response.text
+    sql, bindings = client.stub.calls[-1]
+    # The binding must travel as its own field, never spliced into the SQL.
+    assert bindings == {"site": "mojave"}
+    assert "$site" in sql, "the placeholder must survive to InfluxDB"
+
+
+@pytest.mark.parametrize("bad", ["not json", "[1,2]", '"scalar"', "42"])
+def test_explore_rejects_malformed_params(client: TestClient, bad: str):
+    token = login(client)
+    response = client.get(
+        "/api/explore",
+        params={"sql": "SELECT 1", "params": bad},
+        headers=auth(token),
+    )
+    assert response.status_code == 400
+    assert "JSON object" in response.json()["detail"]
+
+
+def test_explore_without_params_still_works(client: TestClient):
+    token = login(client)
+    client.stub.rows = [{"x": 1}]
+    response = client.get("/api/explore", params={"sql": "SELECT 1 AS x"}, headers=auth(token))
+    assert response.status_code == 200
+    assert response.json()["count"] == 1

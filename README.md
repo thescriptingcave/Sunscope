@@ -120,14 +120,15 @@ Credentials live in `.env` (gitignored, mode 600); token files are in `secrets/`
 
 ```
 docs/                 design documentation (9 documents)
+docs/sql/             35 runnable .sql files, generated from docs/06-sql-examples.md
 sim/                  Python simulator        (host-run, 65 tests)
-api/                  FastAPI backend         (in compose, 146 tests)
+api/                  FastAPI backend         (in compose, 155 tests)
 api/config/alerts.yaml declarative alert rules
 web/                  React PWA              (built to web/dist, served by the API at /)
 telegraf/             MQTT -> InfluxDB config
 grafana/provisioning/ datasource + dashboard provisioning
 scripts/              bootstrap, gen-secrets, gen-tls-cert, influx-init,
-                      telegraf-entrypoint, check-*, inject-fault, watch
+                      telegraf-entrypoint, check-*, export-sql, inject-fault, watch
 scripts/browser/      check-ui: headless browser render of the PWA
 Makefile              thin wrapper over scripts/bootstrap.sh
 ```
@@ -142,7 +143,7 @@ Only the simulator runs on the host; the other five components run in Docker.
 | 2 | InfluxDB schema: 5 tables + Last Value Cache, created before first write | DONE |
 | 3 | Ingest: Telegraf `mqtt_consumer` → InfluxDB, verified end to end | DONE |
 | 4 | Simulator: pvlib physics, fault scenarios, per-inverter MQTT client with LWT | DONE (65 tests) |
-| 5 | FastAPI: auth, `/api/now` off the LVC, `/api/series`, `/api/explore` | DONE (146 tests) |
+| 5 | FastAPI: auth, `/api/now` off the LVC, `/api/series`, `/api/explore` | DONE (155 tests) |
 | 6 | PWA: live tiles over MQTT/WebSocket | DONE |
 | 7 | Alerting: threshold + staleness rules, in-app feed, event persistence | DONE |
 | 8 | Grafana dashboards | BLOCKED — see below |
@@ -161,6 +162,22 @@ http://127.0.0.1:3000/connections/datasources/edit/influxdb3-solar
 Full findings, including everything tried, are in
 [docs/grafana-influxdb-notes.md](./docs/grafana-influxdb-notes.md). The PWA and
 `/api/explore` cover the exploration role meanwhile, over plain HTTPS with no gRPC.
+It accepts `?sql=` plus an optional `?params={...}` JSON object, so bindings travel
+as a field rather than being spliced into the SQL — the same mechanism the rest of
+the API relies on. Restricted to the local host: loopback, or an address only
+reachable over this machine's Docker network.
+
+### Run a query
+
+```bash
+TOK=$(python3 -c "import json,urllib.request;…")   # see 'Verify it yourself'
+curl -sG http://127.0.0.1:8000/api/explore \
+  -H "Authorization: Bearer $TOKEN" \
+  --data-urlencode "sql=SELECT inverter_id, ac_power_w FROM inverter_telemetry
+                    WHERE site = \$site AND time >= now() - INTERVAL '1 hour'
+                    ORDER BY time DESC LIMIT 5" \
+  --data-urlencode 'params={"site":"mojave"}'
+```
 
 ## Running the simulator
 
@@ -325,7 +342,7 @@ uv run --project api --with paho-mqtt python scripts/watch.py
 ./scripts/bootstrap.sh test
 ```
 
-211 tests, lint, type checking, and four verification scripts — including one
+220 tests, lint, type checking, and the verification scripts — including one
 that loads the PWA in headless Chromium and fails if the live feed does not come
 up. It writes screenshots to `shots/`.
 
@@ -406,6 +423,6 @@ Non-obvious behaviours, all verified by running them. Full list in
 | 3 | [Data Flow](./docs/03-data-flow.md) | MQTT topics, JSON payloads, InfluxDB schema, latency budget |
 | 4 | [Security](./docs/04-security.md) | Threat model, per-tier controls, the MQTT-WebSocket exposure cliff |
 | 5 | [Testing](./docs/05-testing.md) | Test strategy, pyramid, contract tests, SQL regression |
-| 6 | [SQL Examples](./docs/06-sql-examples.md) | Beginner → Expert InfluxDB SQL, all 35 executed against the live database |
+| 6 | [SQL Examples](./docs/06-sql-examples.md) | Beginner → Expert InfluxDB SQL, all 35 executed against the live database. Runnable copies in [docs/sql/](./docs/sql/) |
 | 7 | [Alerting](./docs/07-alerting.md) | Rules, debounce and hysteresis, the staleness check |
 | — | [Grafana notes](./docs/grafana-influxdb-notes.md) | Everything tried on the Flight SQL blocker |

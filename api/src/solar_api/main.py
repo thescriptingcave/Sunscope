@@ -19,6 +19,8 @@ Read-only over InfluxDB. Endpoints:
 
 from __future__ import annotations
 
+import ipaddress
+import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Any
@@ -61,6 +63,38 @@ class TokenResponse(BaseModel):
 
 def _client(settings: Settings = Depends(get_settings)) -> InfluxClient:
     return InfluxClient(settings)
+
+
+#: Address ranges that can only be reached from this machine or its Docker
+#: network. Listed explicitly rather than using ``ipaddress.is_private``, which
+#: also covers the documentation and reserved ranges -- 203.0.113.0/24 among
+#: them -- and being over-permissive is the wrong direction for a security guard.
+_LOCAL_NETWORKS = tuple(
+    ipaddress.ip_network(net) for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
+
+
+def _is_local_address(host: str | None) -> bool:
+    """True when a request provably originated on this machine or its containers.
+
+    The private ranges are not a concession to sloppiness: the API's port is
+    published on ``127.0.0.1`` only, and Docker's port forwarding rewrites the
+    client address to the bridge gateway, so a request from the host
+    legitimately arrives from something like ``172.22.0.1``. Without accepting
+    those, every real request was rejected and the endpoint was unusable.
+    """
+    if host is None:
+        # No peer information at all. Treat as local, matching the previous
+        # behaviour; a missing client is not evidence of a remote caller.
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        # A hostname rather than an IP. Not provably local, so refuse.
+        return False
+    if ip.is_loopback or ip.is_link_local:
+        return True
+    return any(ip in network for network in _LOCAL_NETWORKS)
 
 
 def _alerts(request: Request) -> AlertService:
@@ -483,6 +517,10 @@ def create_app() -> FastAPI:
         # would be misread as a query parameter.
         request: Request,
         sql: str = Query(..., min_length=1, max_length=4000),
+        params: str | None = Query(
+            default=None,
+            description='JSON object of $name bindings, e.g. {"site":"mojave"}',
+        ),
         subject: str = Depends(require_auth),
         settings: Settings = Depends(get_settings),
         client: InfluxClient = Depends(_client),
@@ -492,20 +530,55 @@ def create_app() -> FastAPI:
         Replaces the Grafana/Explorer role: a query surface over the same data,
         without the gRPC dependency that blocked both.
 
+        Bindings are accepted as a JSON object in ``params`` and travel to
+        InfluxDB as a separate field, never spliced into the SQL text. Without
+        them an exploration tool could only run queries with literals inlined,
+        which is both tedious and the exact practice the parameter binding exists
+        to avoid -- so the endpoint could not demonstrate, or be used with, the
+        one mechanism that makes ad-hoc SQL safe.
+
         The guard is a deny-list, which is weaker than an allow-list. That is a
         disclosed trade, made necessary because InfluxDB 3 Core has no
-        read-only tokens, so this endpoint holds an admin token. Restricted to
-        localhost below; strengthen before exposing it.
+        read-only tokens, so this endpoint holds an admin token.
+
+        "Local" has to mean more than literal loopback. The port is published on
+        the host's 127.0.0.1 only, but Docker rewrites the source address when it
+        forwards, so the API sees the caller as the bridge gateway -- 172.22.0.1
+        in this stack -- and a check against ("127.0.0.1", "::1") rejects every
+        real request. That made this endpoint, the documented replacement for
+        Grafana's Explorer, unusable in practice, while the test suite passed
+        because TestClient pins the peer to 127.0.0.1 and never reproduced the
+        deployment's actual network path.
+
+        So the test is "loopback, or an address that can only arrive from this
+        host": loopback, RFC 1918 private, or link-local. Nothing on a routable
+        network can produce those, and the port is not exposed off-host.
+        Strengthen before exposing this anywhere.
         """
         rate_limit_query(subject, settings)
         remote = request.client.host if request.client else None
-        if remote not in (None, "127.0.0.1", "::1"):
+        if not _is_local_address(remote):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="raw SQL is restricted to localhost",
+                detail="raw SQL is restricted to the local host",
             )
+        bindings: dict[str, Any] = {}
+        if params:
+            try:
+                parsed = json.loads(params)
+            except json.JSONDecodeError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"params must be a JSON object: {exc}",
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="params must be a JSON object, not a list or scalar",
+                )
+            bindings = parsed
         checked = sqlmod.build_read_only_sql(sql)
-        rows = await client.query(checked)
+        rows = await client.query(checked, bindings or None)
         return {"sql": checked, "count": len(rows), "rows": rows}
 
     @app.get("/api/meta", tags=["telemetry"])

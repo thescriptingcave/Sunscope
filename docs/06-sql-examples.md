@@ -6,6 +6,12 @@ Every query here was checked against the InfluxDB 3 Core SQL reference. Where th
 differs from standard SQL, the difference is called out — several of these patterns exist
 *because* a common SQL feature is unavailable.
 
+> **Runnable copies.** Every query below is also exported to a standalone file in
+> [`docs/sql/`](./sql/), each with a header giving the tier, the features it
+> demonstrates and how to run it. Those files are generated from this document by
+> `uv run python scripts/export-sql.py`, so the two cannot drift, and `--verify`
+> executes each one against the live database.
+
 ## Schema reference
 
 Database: `solar`
