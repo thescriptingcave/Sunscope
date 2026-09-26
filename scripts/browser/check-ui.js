@@ -91,28 +91,31 @@ const VIEWPORTS = [
     await page.fill('input[type=password]', password_);
     await page.click('button[type=submit]');
 
-    // Fail fast on a login error rather than timing out on a selector. The API
-    // rate-limits logins (10 per 5 minutes by default), and a run that trips it
-    // is otherwise indistinguishable from a broken dashboard.
-    const loginError = await page
-      .waitForSelector('.error', { timeout: 12000 })
-      .then((el) => el.textContent().trim())
-      .catch(() => null);
-    if (loginError) {
+    // Wait for *either* outcome in a single race, rather than checking for an
+    // error and then waiting for the dashboard. The sequential version could
+    // miss an error that appeared and was replaced, and reported a rate-limited
+    // run as "timed out waiting for .tile-accent", which is indistinguishable
+    // from a broken dashboard.
+    const outcome = await Promise.race([
+      page
+        .waitForSelector('.tile-accent', { timeout: 45000 })
+        .then(() => ({ ok: true })),
+      // `textContent()` is async on an ElementHandle. Calling `.trim()` on its
+      // return value throws a TypeError, which masked the real message with
+      // "textContent(...).trim is not a function" -- an error path that fails
+      // silently is worse than no error path.
+      page
+        .waitForSelector('.error', { timeout: 45000 })
+        .then(async (el) => ({ ok: false, error: ((await el.textContent()) ?? '').trim() })),
+    ]);
+
+    if (!outcome.ok) {
       throw new Error(
-        `login rejected: "${loginError}"\n` +
-          '  The API rate-limits logins. If this is 429, wait ~5 minutes, or set ' +
-          'LOGIN_RATE_LIMIT higher for repeated checks.'
+        `login rejected: "${outcome.error}"\n` +
+          '  The API rate-limits logins (10 per 5 minutes by default). Repeated ' +
+          'local runs will trip it; wait, or raise LOGIN_RATE_LIMIT.'
       );
     }
-
-    // Wait for the dashboard shell, then for live data to actually land in the
-    // tiles. Rendering the shell is not evidence that telemetry arrived.
-    //
-    // Selected by class, not by text: the label is CSS-uppercased for display
-    // and its wording is free to change, and a text selector turned out to be
-    // flaky across viewports for no benefit.
-    await page.waitForSelector('.tile-accent', { timeout: 30000 });
     console.log('  dashboard shell rendered');
 
     // Wait for real data, not merely for a rendered shell. Two conditions: the
