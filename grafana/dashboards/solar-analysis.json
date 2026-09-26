@@ -1,0 +1,117 @@
+{
+  "uid": "solar-analysis",
+  "title": "Solar Farm — Analysis",
+  "description": "Window functions and CTEs over the telemetry: moving averages, lag, distribution ranking and event rollups. The same SQL is documented in docs/06-sql-examples.md.",
+  "tags": ["solar", "analysis"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "1m",
+  "time": { "from": "now-24h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "inverter",
+        "label": "Inverter",
+        "type": "query",
+        "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+        "query": "SELECT DISTINCT inverter_id FROM inverter_telemetry WHERE site = 'mojave' ORDER BY inverter_id",
+        "definition": "SELECT DISTINCT inverter_id FROM inverter_telemetry WHERE site = 'mojave' ORDER BY inverter_id",
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true,
+        "sort": 1,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Power with a 4-tick moving average (ROWS)",
+      "description": "ROWS counts rows, so the window is 4 samples regardless of elapsed time. Docs example A4. The time picker drives the range via $__timeFilter, so the panel shows the selected window rather than a fixed 6 hours.",
+      "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+          "rawSql": "SELECT time, \"ac_power_w\" AS raw, AVG(\"ac_power_w\") OVER (ORDER BY time ROWS BETWEEN 3 PRECEDING AND CURRENT ROW) AS smoothed FROM inverter_telemetry WHERE site = 'mojave' AND inverter_id IN (${inverter:sqlstring}) AND $__timeFilter(time) ORDER BY time",
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "watt", "custom": { "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "raw" },
+            "properties": [
+              { "id": "custom.lineWidth", "value": 1 },
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "#64748b" } }
+            ]
+          }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Period-over-period change (LAG)",
+      "description": "First difference of the 15-minute mean, which is where a sudden loss shows up before it moves the daily total. Docs example A2. The CTE bins first so the lag compares equal intervals.",
+      "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+          "rawSql": "WITH binned AS (SELECT date_bin(INTERVAL '15 minutes', time) AS time, inverter_id, AVG(\"ac_power_w\") AS avg_power_w FROM inverter_telemetry WHERE site = 'mojave' AND inverter_id IN (${inverter:sqlstring}) AND $__timeFilter(time) GROUP BY 1, inverter_id) SELECT time, inverter_id, avg_power_w, avg_power_w - LAG(avg_power_w) OVER (PARTITION BY inverter_id ORDER BY time) AS change_w FROM binned ORDER BY time",
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "watt", "custom": { "lineWidth": 2, "fillOpacity": 0 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right" } }
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Fleet ranking by mean efficiency (CUME_DIST)",
+      "description": "CUME_DIST places each inverter in the fleet distribution, so you can see not just the best performer but how far ahead it is. Docs example A6.",
+      "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+          "rawSql": "SELECT inverter_id, ROUND(AVG(\"efficiency\"), 4) AS mean_eff, ROUND(CUME_DIST() OVER (ORDER BY AVG(\"efficiency\")), 3) AS percentile FROM inverter_telemetry WHERE site = 'mojave' AND inverter_id IN (${inverter:sqlstring}) AND $__timeFilter(time) GROUP BY inverter_id ORDER BY mean_eff DESC",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "showHeader": true }
+    },
+    {
+      "id": 4,
+      "type": "table",
+      "title": "Events by severity and source (CTE)",
+      "description": "Aggregate rollup over the events table. Docs example E9.",
+      "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+          "rawSql": "WITH recent AS (SELECT time, severity, source, code FROM events WHERE site = 'mojave' AND $__timeFilter(time)) SELECT severity, source, COUNT(*) AS n, MAX(time) AS latest FROM recent GROUP BY severity, source ORDER BY n DESC",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "showHeader": true }
+    }
+  ]
+}

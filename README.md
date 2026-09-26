@@ -110,7 +110,7 @@ set to a `change-me` placeholder — and it never touches the database.
 | MQTT (TCP) | `127.0.0.1:1883` | Simulator publishes here |
 | MQTT (WebSocket) | `ws://127.0.0.1:8083/mqtt` | The PWA subscribes here for live tiles |
 | InfluxDB 3 | https://127.0.0.1:8181 | SQL only — Flux is not supported on 3.x. Self-signed TLS |
-| Grafana | http://127.0.0.1:3000 | Dashboards (datasource blocked, see below) |
+| Grafana | http://127.0.0.1:3000 | Dashboards (Overview, Analysis) |
 
 Every port is bound to `127.0.0.1`, so nothing is reachable from the network.
 Credentials live in `.env` (gitignored, mode 600); token files are in `secrets/`
@@ -146,26 +146,48 @@ Only the simulator runs on the host; the other five components run in Docker.
 | 5 | FastAPI: auth, `/api/now` off the LVC, `/api/series`, `/api/explore` | DONE (155 tests) |
 | 6 | PWA: live tiles over MQTT/WebSocket | DONE |
 | 7 | Alerting: threshold + staleness rules, in-app feed, event persistence | DONE |
-| 8 | Grafana dashboards | BLOCKED — see below |
+| 8 | Grafana dashboards | DONE (2 dashboards, 13 panel queries) |
 
-### The Grafana blocker
+### Grafana
 
-Grafana's InfluxDB datasource queries over Flight SQL (gRPC), which requires TLS
-and which Grafana will not send a `database` header for. Reproduced on 12.2.0 and
-12.4.0. TLS and certificate trust are solved; the header is not. The fix is one
-manual step in the UI, which writes something the provisioning API does not:
+Grafana queries InfluxDB 3 over **Flight SQL** (gRPC), so it needs TLS and it
+needs a `database` header. Both are solved in
+`grafana/provisioning/datasources/influxdb.yaml`, and the datasource works with
+no manual UI step:
+
+- TLS: `scripts/gen-tls-cert.sh` issues the cert; Grafana's gRPC client ignores
+  the datasource TLS settings entirely and honours only `SSL_CERT_FILE`.
+- `database`: it must be set at the **top level** of the datasource, not only in
+  `jsonData`. Grafana sends the top-level field as a gRPC metadata header, and
+  with only `jsonData.database` set, every query failed with
+  `no 'database' header in request`.
+
+Two dashboards are provisioned as code from `grafana/dashboards/`:
+
+| Dashboard | Contents |
+|---|---|
+| **Solar Farm — Overview** | site power, performance ratio, energy, availability, per-inverter AC power, GHI and air temperature, string balance, alert feed |
+| **Solar Farm — Analysis** | moving average (`ROWS`), period-over-period (`LAG`), fleet ranking (`CUME_DIST`), event rollup (CTE) |
 
 ```
-http://127.0.0.1:3000/connections/datasources/edit/influxdb3-solar
+http://127.0.0.1:3000/d/solar-overview
+http://127.0.0.1:3000/d/solar-analysis
 ```
 
-Full findings, including everything tried, are in
-[docs/grafana-influxdb-notes.md](./docs/grafana-influxdb-notes.md). The PWA and
-`/api/explore` cover the exploration role meanwhile, over plain HTTPS with no gRPC.
-It accepts `?sql=` plus an optional `?params={...}` JSON object, so bindings travel
-as a field rather than being spliced into the SQL — the same mechanism the rest of
-the API relies on. Restricted to the local host: loopback, or an address only
-reachable over this machine's Docker network.
+Panels use `$__timeFilter(time)` rather than `now() - INTERVAL`, so the time
+picker drives the window — the simulator's timestamps do not track wall-clock
+time, and a hardcoded window can select no data at all. Multi-value variables use
+`${var:sqlstring}`. Both are explained in
+[docs/grafana-influxdb-notes.md](./docs/grafana-influxdb-notes.md).
+
+`node scripts/browser/check-grafana.js` renders both dashboards in headless
+Chromium and fails on a panel-level query error, an empty panel, or a template
+variable that did not expand. It runs as part of `./scripts/bootstrap.sh test`.
+
+`/api/explore` remains useful and independent of Grafana: it runs SQL over plain
+HTTPS, accepts `?sql=` plus an optional `?params={...}` JSON object so bindings
+travel as a field rather than being spliced into the SQL, and is restricted to
+the local host.
 
 ### Run a query
 
@@ -425,4 +447,4 @@ Non-obvious behaviours, all verified by running them. Full list in
 | 5 | [Testing](./docs/05-testing.md) | Test strategy, pyramid, contract tests, SQL regression |
 | 6 | [SQL Examples](./docs/06-sql-examples.md) | Beginner → Expert InfluxDB SQL, all 35 executed against the live database. Runnable copies in [docs/sql/](./docs/sql/) |
 | 7 | [Alerting](./docs/07-alerting.md) | Rules, debounce and hysteresis, the staleness check |
-| — | [Grafana notes](./docs/grafana-influxdb-notes.md) | Everything tried on the Flight SQL blocker |
+| — | [Grafana notes](./docs/grafana-influxdb-notes.md) | Flight SQL, TLS trust, the `database` header, and writing panels |

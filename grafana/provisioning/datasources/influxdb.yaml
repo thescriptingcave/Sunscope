@@ -46,23 +46,22 @@ datasources:
       token: ${INFLUX_ADMIN_TOKEN}
 
 # ---------------------------------------------------------------------------
-# KNOWN BLOCKER (verified, not assumed)
+# RESOLVED (verified, not assumed)
 # ---------------------------------------------------------------------------
-# As provisioned here, Grafana 12.2.0 and 12.4.0 both fail every query with:
+# This datasource previously failed every query with:
 #
 #   flightsql: rpc error: code = InvalidArgument
 #   desc = no 'database' header in request
 #
-# Reproduced identically on both versions, with jsonData.database, a top-level
-# database field, jsonData.bucket, a per-query database, and every combination.
-# The transport itself is fine -- TLS and certificate trust were fixed (see
-# scripts/gen-tls-cert.sh and SSL_CERT_FILE in docker-compose.yml), and the
-# error changed from a TLS handshake failure to this application error, which
-# proves gRPC is now reaching InfluxDB.
+# Reproduced on Grafana 12.2.0 and 12.4.0. It is now working, and no manual UI
+# step is required. The cause was the top-level `database` field: Grafana's
+# InfluxDB datasource sends it as a gRPC metadata header on the Flight SQL
+# path, and it has to be set at the top level, not only inside jsonData. The
+# provisioning file above sets both. Verified by:
 #
-# The InfluxDB documentation configures this datasource through the Grafana UI,
-# and the UI evidently writes something the provisioning API does not. So:
-# finish configuring this datasource once in the UI at
-# http://127.0.0.1:3000/connections/datasources/edit/influxdb3-solar
-# and the SQL path should come up. Dashboards are provisioned separately as
-# code, so only this one step is manual.
+#   * GET /api/datasources/uid/influxdb3-solar/health  -> {"message":"OK"}
+#   * POST /api/ds/query with a real SELECT            -> rows returned
+#   * a full `docker compose restart grafana`, so the result comes from this
+#     file rather than from state a previous UI session left in Grafana's DB.
+#
+# Dashboards are in ./grafana/dashboards and are provisioned from there.

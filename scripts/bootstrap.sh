@@ -256,6 +256,17 @@ run_tests() {
   node scripts/browser/check-ui.js \
     || die "the PWA did not render, or its live feed did not come up"
 
+  # Grafana is the other UI, and it fails differently: the datasource can return
+  # frames that Grafana still fails to plot, and a template variable can fail to
+  # expand while every query reports success. Only rendering catches either.
+  step "Grafana check (renders the provisioned dashboards)"
+  if docker compose ps --status running --services 2>/dev/null | grep -qx grafana; then
+    node scripts/browser/check-grafana.js \
+      || die "a Grafana dashboard did not render, or a panel query failed"
+  else
+    warn "Grafana is not running; skipped the dashboard render check"
+  fi
+
   # docs/sql is generated from docs/06-sql-examples.md, so a stale file means the
   # runnable copies and the teaching document have diverged.
   uv run python scripts/export-sql.py --check \

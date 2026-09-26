@@ -2,8 +2,9 @@
 
 Findings from building this stack, all verified against a live
 `grafana/grafana:12.2.0` and `influxdb:3.11-core`. Read this before debugging
-the datasource, because two of these cost hours and neither is documented
-accurately.
+the datasource: sections 1–3 are the TLS traps that cost hours, section 4 is the
+`database` header that looks like a Grafana bug and is not, and section 6 is how
+to write panels that actually show data.
 
 ## 1. Flight SQL requires TLS. This is not optional.
 
@@ -71,54 +72,92 @@ disabling verification:
 tls_ca = "/run/secrets/tls/server.crt"
 ```
 
-## 4. Open blocker: the database header is not sent
+## 4. Resolved: the database header is a top-level field
 
-With TLS working, the error changes to:
+With TLS working, the next error was:
 
 ```
 flightsql: rpc error: code = InvalidArgument desc = no 'database' header in request
 ```
 
 That is an *application* error from InfluxDB, which proves gRPC is now
-connecting successfully. But the Flight SQL request carries no database.
+connecting successfully — but the Flight SQL request carried no database.
 
-Reproduced identically on **grafana/grafana 12.2.0 and 12.4.0**, and across
-every combination of:
+The cause is that Grafana sends `database` as a **gRPC metadata header**, and it
+reads that field from the **top level** of the datasource, not from `jsonData`.
+Setting only `jsonData.database` leaves the header unset. The provisioning needs
+both, because they are not aliases:
 
-- `jsonData.database` = `solar`
-- top-level `database` field = `solar`
-- `jsonData.bucket` = `solar`
-- per-query `database` field
-- `user` set alongside `database`
-
-The InfluxDB documentation configures this datasource **through the Grafana UI**,
-and the UI evidently writes something the provisioning API does not.
-
-### Resolution
-
-Finish configuring the datasource once in the UI:
-
-```
-http://127.0.0.1:3000/connections/datasources/edit/influxdb3-solar
+```yaml
+datasources:
+  - name: InfluxDB-3
+    uid: influxdb3-solar
+    type: influxdb
+    url: https://influxdb:8181
+    database: solar          # <- sent as the gRPC `database` header
+    jsonData:
+      version: SQL
+      database: solar        # <- used by the HTTP/InfluxQL path
 ```
 
-Set URL, Token, and Database, choose SQL, and save. After that, dashboards can
-still be provisioned as code from `grafana/provisioning/dashboards/`, so this is
-a one-time manual step rather than an ongoing one.
+Verified, not assumed:
 
-## 5. Selecting InfluxQL is not possible via provisioning either
+- `GET /api/datasources/uid/influxdb3-solar/health` → `{"message":"OK"}`
+- `POST /api/ds/query` with a real `SELECT` → rows returned
+- after a full `docker compose restart grafana`, so the result comes from the
+  provisioning file and not from state an earlier UI session left behind
 
-InfluxQL uses HTTP/1.1 and would sidestep gRPC entirely, making the whole
-problem disappear. But `jsonData.version` does not appear to select the query
-language in Grafana 12.2 — setting it to `InfluxQL` left the transport on
-Flight SQL. The same "configure it in the UI" caveat applies.
+This was originally filed as a blocker requiring a one-time manual step in the
+Grafana UI. **No manual step is needed.** The dashboards in
+`grafana/dashboards/` are provisioned from code like everything else.
 
-If Grafana remains blocked, two working alternatives for the same data:
+## 5. Flight SQL *is* the SQL path — there is nothing to switch away from
 
-- **InfluxDB 3 Explorer**, bundled with the server, queries SQL over plain HTTPS
-  today and needs no Grafana.
-- The **PWA** (phase 7), which reads the Last Value Cache and SQL directly
-  through FastAPI and does not depend on Grafana at all.
+A common misreading: `jsonData.version: SQL` sounds like it should select a
+non-gRPC transport, and InfluxQL sounds like the escape hatch from all this TLS
+and header trouble. It is the reverse.
+
+Flight SQL is how Grafana queries InfluxDB 3 with SQL. Choosing SQL is what puts
+the datasource on gRPC, and gRPC is what requires TLS. InfluxQL would use
+HTTP/1.1 and sidestep all of section 1, but InfluxQL is not supported by
+InfluxDB 3 Core, so that is not an option — it is a different product.
+
+`jsonData.product` must be set to **`InfluxDB Enterprise`** even on Core. There is
+no Core-specific entry in the dropdown, and this is expected, not a mistake.
+
+## 6. Writing panels against InfluxDB 3 SQL
+
+Three things that are not obvious and each cost a debugging cycle.
+
+**Use `$__timeFilter(time)`, not `now() - INTERVAL`.** The simulator publishes
+simulated timestamps that do not track wall-clock time, so a hardcoded
+`now() - INTERVAL '6 hours'` can select a window that contains no data at all —
+and an empty panel is indistinguishable from a broken query. `$__timeFilter`
+expands to the dashboard's time-picker range, so the user controls the window and
+the panels are honest about what they cover.
+
+**Use `${var:sqlstring}` for multi-value variables.** A bare `$inverter` is
+interpolated by Grafana's generic formatter, which does not produce a quoted SQL
+list. The datasource then plans the query against a bare identifier:
+
+```
+Schema error: No field named inv. Valid fields are inverter_telemetry.ac_power_w, ...
+```
+
+Correct form, which expands to `'INV-01','INV-02',…`:
+
+```sql
+WHERE inverter_id IN (${inverter:sqlstring})
+```
+
+**Tags are `Dictionary(Int32, Utf8)`.** A column's SQL type is how you tell a
+tag from a field, which matters for anything that reconstructs line protocol.
+`information_schema.columns.data_type` gives the answer:
+
+| `data_type` | Meaning |
+|---|---|
+| `Dictionary(Int32, Utf8)` | tag — part of the primary key, immutable |
+| `Float64`, `Int64`, `Utf8`, `Boolean` | field |
 
 ## Summary of what each component needs
 
@@ -127,13 +166,18 @@ If Grafana remains blocked, two working alternatives for the same data:
 | InfluxDB server | `--tls-cert` / `--tls-key` | yes |
 | `influxdb3` CLI | `--tls-no-verify` (or `--tls-ca`) | yes |
 | Telegraf | `tls_ca = <path>` | yes |
-| FastAPI (phase 6) | `httpx` / `influxdb3` client CA bundle | not yet built |
+| FastAPI | `httpx` with the CA bundle | yes |
 | Grafana HTTP client | `jsonData.insecureSkipVerify` | yes |
-| **Grafana Flight SQL client** | **`SSL_CERT_FILE` only** | **TLS yes, queries no** |
+| **Grafana Flight SQL client** | **`SSL_CERT_FILE` only** | **yes, with a top-level `database`** |
 
 ## Health-check caveat
 
-`GET /api/datasources/uid/<uid>/health` returns the Flight SQL error above even
-when a *real query* might work, because the health check does not carry a
-database either. Do not treat the health endpoint as authoritative for this
-datasource — test an actual query.
+Test an actual query, not just the health endpoint. The health check does not
+carry a database, so during the failure in section 4 it reported the Flight SQL
+error; conversely it is not a substitute for confirming a panel renders, because
+a datasource can return frames that Grafana still fails to plot.
+
+`scripts/browser/check-grafana.js` does both: it logs in, renders each
+provisioned dashboard in headless Chromium, and fails on a panel-level query
+error, an empty panel, or a template variable that did not expand. It is wired
+into `./scripts/bootstrap.sh test`.

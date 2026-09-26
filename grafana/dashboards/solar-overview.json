@@ -1,0 +1,248 @@
+{
+  "uid": "solar-overview",
+  "title": "Solar Farm — Overview",
+  "description": "Site power, performance ratio, availability and the alert feed. Reads through the InfluxDB 3 datasource over Flight SQL.",
+  "tags": ["solar", "overview"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "time": { "from": "now-24h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Site power",
+      "description": "Latest AC output across all inverters. ORDER BY time DESC LIMIT 1, which reads the tail of the window rather than scanning the whole history.",
+      "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+          "rawSql": "SELECT \"total_ac_power_w\" FROM site_rollup WHERE site = 'mojave' ORDER BY time DESC LIMIT 1",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "decimals": 0,
+          "color": { "mode": "fixed", "fixedColor": "#38bdf8" }
+        },
+        "overrides": []
+      },
+      "options": { "graphMode": "none", "textMode": "value", "colorMode": "value" }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Performance ratio",
+      "description": "Temperature-corrected AC/POA ratio. Below 0.7 for a sustained period is the performance_ratio_low alert.",
+      "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+          "rawSql": "SELECT \"pr_ratio\" FROM site_rollup WHERE site = 'mojave' ORDER BY time DESC LIMIT 1",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 3,
+          "min": 0,
+          "max": 1.1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "#f87171", "value": null },
+              { "color": "#fbbf24", "value": 0.7 },
+              { "color": "#34d399", "value": 0.85 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "graphMode": "none", "textMode": "value", "colorMode": "value" }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Energy today",
+      "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+          "rawSql": "SELECT \"daily_yield_kwh\" FROM site_rollup WHERE site = 'mojave' ORDER BY time DESC LIMIT 1",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "kwatth", "decimals": 0, "color": { "mode": "fixed", "fixedColor": "#34d399" } },
+        "overrides": []
+      },
+      "options": { "graphMode": "none", "textMode": "value", "colorMode": "value" }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Inverters online",
+      "description": "4 is the full fleet. Below it, the inverters_missing alert fires.",
+      "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+          "rawSql": "SELECT \"inverters_online\" AS online, \"strings_online\" AS strings FROM site_rollup WHERE site = 'mojave' ORDER BY time DESC LIMIT 1",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "#f87171", "value": null },
+              { "color": "#34d399", "value": 4 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "graphMode": "none", "textMode": "value", "colorMode": "value" }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "AC power — all inverters",
+      "description": "One series per inverter, binned to 5 minutes. Overlapping lines are normal when the fleet is balanced. The time picker drives the window via $__timeFilter.",
+      "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+      "gridPos": { "h": 9, "w": 16, "x": 0, "y": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+          "rawSql": "SELECT date_bin(INTERVAL '5 minutes', time) AS time, inverter_id, AVG(\"ac_power_w\") AS \"ac power\" FROM inverter_telemetry WHERE site = 'mojave' AND $__timeFilter(time) GROUP BY 1, inverter_id ORDER BY 1",
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "custom": { "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] } }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "GHI and air temperature",
+      "description": "Irradiance drives output; a clear multi-day drop with no weather change is the sensor_drift fault.",
+      "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+      "gridPos": { "h": 9, "w": 8, "x": 16, "y": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+          "rawSql": "SELECT date_bin(INTERVAL '5 minutes', time) AS time, AVG(\"ghi\") AS \"GHI\" FROM weather_station WHERE site = 'mojave' AND $__timeFilter(time) GROUP BY 1 ORDER BY 1",
+          "format": "time_series"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+          "rawSql": "SELECT date_bin(INTERVAL '5 minutes', time) AS time, AVG(\"air_temp_c\") AS \"air temp\" FROM weather_station WHERE site = 'mojave' AND $__timeFilter(time) GROUP BY 1 ORDER BY 1",
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "watt/m²", "custom": { "lineWidth": 2, "fillOpacity": 0 } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "air temp" },
+            "properties": [
+              { "id": "unit", "value": "celsius" },
+              { "id": "custom.axisPlacement", "value": "right" }
+            ]
+          }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+    },
+    {
+      "id": 20,
+      "type": "bargauge",
+      "title": "String balance per inverter",
+      "description": "Spread between the strongest and weakest string. Normal is under 5%; a genuinely degrading string exceeds 20%. The inner query groups by time as well as inverter because MAX and MIN over the whole window would just compare the fleet's overall peaks.",
+      "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+          "rawSql": "SELECT inverter_id, ROUND(MAX(imbalance), 4) AS \"imbalance\" FROM (SELECT time, inverter_id, (MAX(\"dc_power_w\") - MIN(\"dc_power_w\")) / NULLIF(MAX(\"dc_power_w\"), 0) AS imbalance FROM string_telemetry WHERE site = 'mojave' AND $__timeFilter(time) GROUP BY time, inverter_id HAVING COUNT(DISTINCT string_id) >= 3) GROUP BY inverter_id ORDER BY \"imbalance\" DESC",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 0.3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "#34d399", "value": null },
+              { "color": "#fbbf24", "value": 0.05 },
+              { "color": "#f87171", "value": 0.2 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "displayMode": "gradient", "orientation": "horizontal", "showUnfilled": true }
+    },
+    {
+      "id": 30,
+      "type": "table",
+      "title": "Alert feed",
+      "description": "Every alert transition, written by the API rule engine and the simulator. Resolutions carry a _RESOLVED suffix at info severity.",
+      "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "influxdb3-solar" },
+          "rawSql": "SELECT time, severity, source, code, message FROM events WHERE site = 'mojave' AND $__timeFilter(time) ORDER BY time DESC LIMIT 50",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "severity" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              { "id": "mappings", "value": [
+                { "type": "value", "options": { "critical": { "color": "red", "text": "CRITICAL", "index": 0 } } },
+                { "type": "value", "options": { "warning": { "color": "orange", "text": "WARNING", "index": 1 } } },
+                { "type": "value", "options": { "info": { "color": "green", "text": "INFO", "index": 2 } } }
+              ] }
+            ]
+          }
+        ]
+      },
+      "options": { "showHeader": true, "cellHeight": "sm" }
+    }
+  ]
+}
