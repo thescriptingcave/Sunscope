@@ -1,0 +1,180 @@
+name: CI
+
+# Everything below mirrors a command verified locally. The point of this file is
+# that the 220 tests, the four verification scripts and the headless browser check
+# run on every push rather than only when someone remembers to run them --
+# several bugs in this repo were latent for days and a workflow catches them in
+# seconds.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The browser check performs a real login, and the API rate-limits logins to
+  # 10 per 5 minutes. Several checks in one run trip that, and the symptom is a
+  # login rejection rather than a real failure.
+  LOGIN_RATE_LIMIT: "100"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  python:
+    name: tests and lint (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install Python dependencies
+        run: |
+          uv sync --project api --all-groups
+          uv sync --project sim --all-groups
+
+      - name: Install Node dependencies
+        run: |
+          npm --prefix web ci
+          npm --prefix scripts/browser ci
+
+      - name: Lint and type check
+        run: |
+          uv run --project sim ruff check src/ tests/
+          uv run --project api ruff check src/ tests/
+          npm --prefix web run build     # runs tsc -b, so it type-checks too
+
+      - name: Unit tests (no services required)
+        run: |
+          uv run --project sim pytest -q
+          # test_live.py talks to a real InfluxDB and has no skip guard, so it
+          # would fail here rather than skip; it runs in the integration job.
+          # test_pwa.py self-skips without a bundle, and the build step above
+          # produced one, so it runs in both.
+          uv run --project api pytest -q --ignore=tests/test_live.py
+
+  integration:
+    name: full stack, verification scripts, browser check
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # One job owns the whole stack: the checks below are end-to-end by nature and
+    # splitting them would mean standing up the same five containers repeatedly.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install Chromium for the browser check
+        run: npx --prefix scripts/browser playwright install --with-deps chromium
+
+      - name: Install dependencies
+        run: |
+          npm --prefix web ci
+          npm --prefix scripts/browser ci
+          uv sync --project api --all-groups
+          uv sync --project sim --all-groups
+
+      - name: Bring up the stack
+        run: ./scripts/bootstrap.sh up
+
+      - name: Simulator backfills history
+        run: |
+          # bootstrap starts the simulator, which backfills 24 h. Give it a moment
+          # to publish and for Telegraf to flush before asserting on the data.
+          sleep 90
+          tail -5 sim.log
+
+      - name: API test suite (including live-dialect tests)
+        run: uv run --project api pytest -q
+
+      - name: Verification scripts
+        run: |
+          uv run python scripts/check-pwa-contract.py
+          uv run python scripts/check-doc-sql.py
+          uv run --project api --with paho-mqtt python scripts/check-live-ws.py
+
+      - name: docs/sql is generated and in sync
+        run: |
+          uv run python scripts/export-sql.py --check
+          uv run python scripts/export-sql.py --verify
+
+      - name: Browser check (renders the PWA, fails if the live feed is down)
+        run: node scripts/browser/check-ui.js --wait 60
+
+      - name: Grafana check (renders both dashboards, fails on any panel error)
+        run: node scripts/browser/check-grafana.js
+
+      - name: Backup and restore round-trip
+        run: |
+          # A backup that cannot be restored is not a backup, and the restore
+          # path here is non-trivial: it recreates the schema and rebuilds line
+          # protocol from CSV. Verify it rather than trusting it.
+          uv run --project api python scripts/backup.py --backup --dir /tmp/ci-backups
+          uv run --project api python scripts/backup.py --restore \
+            "$(ls -d /tmp/ci-backups/*/ | head -1)" \
+            --database ci_restore --create-database
+          uv run --project api python scripts/backup.py --list --dir /tmp/ci-backups
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pwa-screenshots
+          path: shots/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Container logs on failure
+        if: failure()
+        run: |
+          docker compose ps
+          docker compose logs --tail 200 > compose-logs.txt || true
+          cat compose-logs.txt
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compose-logs
+          path: compose-logs.txt
+          retention-days: 7
+
+      - name: Tear down
+        if: always()
+        run: ./scripts/bootstrap.sh sim:stop || true
