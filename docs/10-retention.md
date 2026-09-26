@@ -105,7 +105,7 @@ uv run --project api python scripts/backup.py --backup \
 ./scripts/bootstrap.sh down
 
 # 3. Destroy the volume — the only step that reclaims anything.
-docker volume rm solar-sim_influx-data
+docker volume rm sunscope_influx-data
 
 # 4. Bring it back; influx-init recreates the schema.
 ./scripts/bootstrap.sh up

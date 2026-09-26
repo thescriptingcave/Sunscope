@@ -124,7 +124,7 @@ start_infrastructure() {
   # because InfluxDB tag definitions are immutable once a table exists.
   docker compose up -d --build >/dev/null 2>&1 || die "docker compose up failed"
 
-  wait_for_container solar-telegraf "running" 120 \
+  wait_for_container sunscope-telegraf "running" 120 \
     || warn "telegraf is not running yet; check: docker compose logs telegraf"
   wait_for_http "http://127.0.0.1:8000/healthz" "api" 120 \
     || warn "api health endpoint not answering; check: docker compose logs api"
@@ -321,7 +321,7 @@ scratch_cleanup() {
 }
 
 backup_roundtrip() {
-  SCRATCH_DB="${BACKUP_SCRATCH_DB:-solar_backup_check}"
+  SCRATCH_DB="${BACKUP_SCRATCH_DB:-sunscope_backup_check}"
   SCRATCH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/solar-backup.XXXXXX")"
 
   # The token is a credential, so it is read from the file rather than passed on

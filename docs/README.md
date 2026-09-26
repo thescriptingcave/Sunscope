@@ -1,6 +1,6 @@
-# Solar Farm Simulator — Design Documentation
+# Sunscope — Design Documentation
 
-A physics-based solar farm simulator with a real-time web and mobile dashboard.
+Sunscope: a physics-based solar farm simulator with a real-time web and mobile dashboard.
 
 **Stack:** Python (pvlib) → MQTT (EMQX) → Telegraf → InfluxDB 3 Core → Grafana + React PWA + FastAPI
 

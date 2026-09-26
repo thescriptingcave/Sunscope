@@ -4,12 +4,12 @@
 # EMQX ships with no authentication enabled, and InfluxDB/Grafana ship with
 # default credentials. See docs/04-security.md before changing any binding.
 
-name: solar-sim
+name: sunscope
 
 services:
   emqx:
     image: emqx/emqx:5.8.6
-    container_name: solar-emqx
+    container_name: sunscope-emqx
     restart: unless-stopped
     ports:
       - "127.0.0.1:${MQTT_PORT:-1883}:1883"          # MQTT over TCP
@@ -33,7 +33,7 @@ services:
 
   influxdb:
     image: influxdb:3.11-core
-    container_name: solar-influxdb
+    container_name: sunscope-influxdb
     restart: unless-stopped
     ports:
       - "127.0.0.1:8181:8181"
@@ -86,7 +86,7 @@ services:
   # definitions are immutable once a table exists.
   influx-init:
     image: influxdb:3.11-core
-    container_name: solar-influx-init
+    container_name: sunscope-influx-init
     depends_on:
       influxdb:
         condition: service_healthy
@@ -103,7 +103,7 @@ services:
 
   telegraf:
     image: telegraf:1.36
-    container_name: solar-telegraf
+    container_name: sunscope-telegraf
     restart: unless-stopped
     depends_on:
       emqx:
@@ -133,7 +133,7 @@ services:
 
   grafana:
     image: grafana/grafana:12.2.0
-    container_name: solar-grafana
+    container_name: sunscope-grafana
     restart: unless-stopped
     depends_on:
       influx-init:
@@ -184,7 +184,7 @@ services:
       context: ./api
       dockerfile: Dockerfile
     image: solar-api:dev
-    container_name: solar-api
+    container_name: sunscope-api
     restart: unless-stopped
     depends_on:
       influx-init:

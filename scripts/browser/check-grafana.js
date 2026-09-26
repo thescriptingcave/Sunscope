@@ -27,8 +27,8 @@ const SHOTS = path.join(ROOT, 'shots')
 const BASE = process.env.GRAFANA_URL || 'http://127.0.0.1:3000'
 
 const DASHBOARDS = [
-  { slug: 'solar-overview', title: 'Solar Farm — Overview', expect: 8 },
-  { slug: 'solar-analysis', title: 'Solar Farm — Analysis', expect: 4 },
+  { slug: 'solar-overview', title: 'Sunscope — Overview', expect: 8 },
+  { slug: 'solar-analysis', title: 'Sunscope — Analysis', expect: 4 },
 ]
 
 /**

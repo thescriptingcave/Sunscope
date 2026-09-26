@@ -1,9 +1,16 @@
-# Solar Farm Simulator
+# Sunscope
 
-A 1 MWac desert PV plant, simulated with [pvlib](https://pvlib-python.readthedocs.io/),
-publishing telemetry over MQTT, stored in InfluxDB 3 Core, and surfaced through a
-FastAPI backend and an installable React PWA — with threshold and staleness
-alerting that catches faults you inject yourself.
+> A 1 MWac solar farm in the Mojave, simulated with
+> [pvlib](https://pvlib-python.readthedocs.io/) and observed end to end:
+> MQTT → InfluxDB 3 → a real-time PWA, Grafana dashboards, and alerting you can
+> make fail on purpose.
+
+A physics-based PV plant — four inverters across two blocks, twelve strings, a
+weather station — publishing telemetry exactly as real hardware would, from line
+protocol on the wire through to the dashboard. The observability path is the
+point, not the solar: a declarative alert engine with debounce, hysteresis and
+staleness detection, a Last Value Cache so the UI opens instantly, and fault
+injection so the alerting can be seen to work rather than taken on trust.
 
 ```
 pvlib simulator ──MQTT──▶ EMQX ──┬──▶ Telegraf ──▶ InfluxDB 3 ──▶ FastAPI ──▶ PWA
@@ -167,8 +174,8 @@ Two dashboards are provisioned as code from `grafana/dashboards/`:
 
 | Dashboard | Contents |
 |---|---|
-| **Solar Farm — Overview** | site power, performance ratio, energy, availability, per-inverter AC power, GHI and air temperature, string balance, alert feed |
-| **Solar Farm — Analysis** | moving average (`ROWS`), period-over-period (`LAG`), fleet ranking (`CUME_DIST`), event rollup (CTE) |
+| **Sunscope — Overview** | site power, performance ratio, energy, availability, per-inverter AC power, GHI and air temperature, string balance, alert feed |
+| **Sunscope — Analysis** | moving average (`ROWS`), period-over-period (`LAG`), fleet ranking (`CUME_DIST`), event rollup (CTE) |
 
 ```
 http://127.0.0.1:3000/d/solar-overview

@@ -1,6 +1,6 @@
 {
   "uid": "solar-analysis",
-  "title": "Solar Farm — Analysis",
+  "title": "Sunscope — Analysis",
   "description": "Window functions and CTEs over the telemetry: moving averages, lag, distribution ranking and event rollups. The same SQL is documented in docs/06-sql-examples.md.",
   "tags": ["solar", "analysis"],
   "timezone": "browser",

@@ -1,6 +1,6 @@
 {
   "uid": "solar-overview",
-  "title": "Solar Farm — Overview",
+  "title": "Sunscope — Overview",
   "description": "Site power, performance ratio, availability and the alert feed. Reads through the InfluxDB 3 datasource over Flight SQL.",
   "tags": ["solar", "overview"],
   "timezone": "browser",
