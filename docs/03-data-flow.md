@@ -238,7 +238,7 @@ topic**. See §2.0.
 ## 3. InfluxDB schema
 
 Database: `solar`. Five tables. **Tag sets are immutable** — created by
-`scripts/init-influx.sh` before the first publish.
+`scripts/influx-init.sh` before the first publish.
 
 ### 3.1 `inverter_telemetry`
 
@@ -425,7 +425,7 @@ logs, proxy logs and browser history.
 | 2 | EMQX | TCP session drops, keepalive expires | keepalive × 1.5 (~45 s at 30 s keepalive) |
 | 3 | EMQX | Publishes LWT: `state: offline` on status topic | with step 2 |
 | 4 | PWA | Retained status message received → tile turns red | **< 1 s after step 3** |
-| 5 | FastAPI | Alert rule sees `offline` → Web Push | < 5 s |
+| 5 | FastAPI | Alert rule fires → PWA Alerts panel, and a row in `events` | < 5 s |
 | 6 | InfluxDB | Telegraf has no new rows → time-series gap | next query |
 
 ### 5.4 Comms loss (the hard case)
@@ -435,7 +435,7 @@ The session stays alive, so no LWT fires. Telemetry simply stops.
 1. Simulator stops publishing, connection stays open
 2. No status change is published — **the device still looks healthy**
 3. The staleness rule in the alert engine fires: no telemetry for `3 × publish_interval`
-4. Web Push: "INV-03 not reporting for 3 minutes"
+4. The PWA Alerts panel shows `device_offline` for INV-03, and a row lands in `events`
 5. Time-series gap visible in both Grafana and the PWA
 
 **This is why both an offline check and a staleness check are required.** A system with only
@@ -463,4 +463,4 @@ This is the clearest demonstration of why the live and history paths are separat
 | InfluxDB write ack | < 100 ms | WAL |
 | FastAPI `/api/now` (LVC) | < 50 ms | In-memory cache |
 | FastAPI `/api/series` | < 2 s | Parquet scan, range-dependent |
-| Alert rule → Web Push | < 5 s | Plus rule debounce |
+| Alert rule → PWA alert + `events` row | < 5 s | Plus rule debounce |

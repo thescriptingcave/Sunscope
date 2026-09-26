@@ -163,10 +163,19 @@ Real components in Docker, real wire protocols — no mocks below the network bo
 | End-to-end tick | Simulator → EMQX → Telegraf → InfluxDB, then query it back |
 | Latency bound | Publish → queryable in InfluxDB within 30 s |
 | Data fidelity | Values at each hop are numerically identical |
-| Schema creation | `init-influx.sh` produces the declared schema |
+| Schema creation | `influx-init.sh` produces the declared schema |
 | Last Value Cache | `last_cache()` returns the most recent value per series |
 | InfluxDB outage | Telegraf buffers; data recovered after restart |
-| Retention | Out-of-range data is gone |
+| Live relay | `GET /api/live` streams frames from the MQTT subscription |
+| Backup round-trip | Restore into a scratch database, assert row counts match |
+
+
+There is deliberately **no retention test**, because retention is not implemented: InfluxDB 3
+Core has no row-level delete and never reclaims disk, so "out-of-range data is gone" is not an
+assertion this engine can satisfy. The constraint, and the only reclaim path that does work, are
+documented in [Retention](./10-retention.md). What is tested instead is that a backup can be
+restored — a backup that cannot be restored is not a backup, and the restore path (recreate the
+schema from the manifest, rebuild line protocol from CSV) is the non-trivial half.
 
 Data fidelity is the one that catches mapping bugs:
 
@@ -184,65 +193,76 @@ reasons unrelated to correctness.
 
 ## 5. SQL regression tests
 
-Every query in [06 — SQL Examples](./06-sql-examples.md) is a test. DataFusion's dialect differs
-from standard SQL in ways that only surface at runtime, and a documented example that does not
-run is worse than no example.
+The SQL layer is tested in two separate ways, because "does the query run" and "is the query
+correct" fail independently.
+
+### 5.1 The builders: injection defence and dialect rules
+
+`api/tests/test_sql.py`, 23 tests, no database required. These are the more important half:
+the allowlists are the only thing between an HTTP client and an **admin-scoped** InfluxDB
+token, because InfluxDB 3 Core has no permission-scoped database tokens. A builder that
+concatenates a caller-supplied value into the SQL text is a token-disclosure bug, not a style
+problem.
 
 ```python
-@pytest.mark.parametrize("query_id", [
-    "beginner_01", "beginner_02",      # ...
-    "advanced_03", "expert_05",
-])
-def test_documented_query_runs(query_id, seeded_db):
-    sql = load_sql(f"docs/examples/{query_id}.sql")
-    result = execute(sql, database="solar_test")
-    assert result is not None
+def test_user_values_never_appear_in_the_sql_text():
+    """A binding must be a parameter, never spliced into the statement."""
+    query, params = sqlmod.build_series_query(table="inverter_telemetry", ...)
+    assert "mojave" not in query.sql          # the site comes from params
+    assert params["site"] == "mojave"
 ```
 
-Plus semantic assertions, because a query that returns no rows passes an execution test
-while being completely wrong:
+Also pinned: unknown table, metric, interval and dimension are all rejected before any SQL is
+built; identifiers come only from the allowlists; bucketed queries use ordinal `GROUP BY`; the
+`raw` interval emits no `date_bin`. Each of those is a DataFusion constraint that fails
+subtly — it still returns data, just wrong.
 
-| Test | Assertion |
-|---|---|
-| LAG correctness | `lag` output equals the previous row's value |
-| Running total | Monotonically non-decreasing |
-| Moving average | Matches a hand-computed NumPy result |
-| `RANK` vs `ROW_NUMBER` vs `DENSE_RANK` | Differ correctly on ties |
-| Frame bounds | `ROWS 3 PRECEDING` averages exactly 4 rows |
-| Time bucketing | `date_bin` bins align and are non-overlapping |
-| Null handling | `count` excludes NULLs when filtered |
-| Round-trip | CTE result equals the equivalent subquery form |
+### 5.2 Every documented query must execute
 
-The moving-average test is the most valuable — off-by-one errors in window frames are the
-single most common window-function bug, and they produce numbers that look reasonable.
+`docs/06-sql-examples.md` is the source of truth for SQL teaching material, and
+[Retention](./10-retention.md) §1 is a standing reminder that this dialect rejects things
+standard SQL accepts. A documented example that does not run is worse than no example, so:
 
-```python
-def test_moving_average_matches_numpy(seeded_db):
-    sql = """
-    SELECT time, ac_power_w,
-           AVG(ac_power_w) OVER (ORDER BY time
-                                 ROWS BETWEEN 3 PRECEDING AND CURRENT ROW) AS ma
-    FROM inverter_telemetry WHERE inverter_id = 'INV-01' ORDER BY time
-    """
-    got = dataframe_from_sql(sql)
-    expected = got["ac_power_w"].rolling(4, min_periods=1).mean()
-    pd.testing.assert_series_equal(got["ma"], expected, check_names=False)
-```
+- `scripts/export-sql.py` **generates** `docs/sql/*.sql` from the document. The 35 files are
+  build output, never hand-edited.
+- `export-sql.py --check` fails if they have drifted from the document.
+- `export-sql.py --verify` executes every one of the 40 statements against the live database.
+- `scripts/check-doc-sql.py` additionally runs **every** ```` ```sql ```` block in **every**
+  document, so prose in another doc cannot drift either.
+
+40 statements, 39 executable, 12 deliberately skipped (parameterised queries, and panel SQL
+carrying Grafana macros that only Grafana expands). A green run is a hard gate in
+`bootstrap.sh test`.
+
+Semantic assertions sit on top in the document itself: the comments say what each query
+should prove, not just that it parses.
 
 ## 6. Frontend and E2E
 
-| Test | Tool | Scope |
-|---|---|---|
-| Component | Vitest + React Testing Library | Tiles, heatmap, chart data transforms |
-| Hooks | Vitest | MQTT reconnect, subscription lifecycle, offline handling |
-| E2E | Playwright | Login → live tile updates → history chart → alert acknowledged |
-| Responsive | Playwright | 375 px, 768 px, 1440 px viewports |
-| Offline | Playwright | Broker unreachable → reconnect banner, then recovery |
+There is **no frontend unit-test framework**. `web/` has no Vitest, no React Testing Library
+and no jsdom; adding one for a thin view layer would mostly assert implementation details.
+What exists instead is two headless-Chromium checks that render the real thing and assert on
+the rendered DOM:
 
-Deliberately light. The frontend is a thin view over two data sources, and a large UI test
-suite would mostly be asserting implementation details. The one behaviour genuinely worth an E2E
-test is **MQTT reconnect**, because a silent reconnect failure looks identical to a working
-dashboard showing stale data — and that failure is very hard to spot by hand.
+| Check | Script | Asserts |
+|---|---|---|
+| PWA | `scripts/browser/check-ui.js` | Login renders; live feed connects; KPI tiles, inverter cards, chart series and string cells are present; **no console errors and no failed requests**; desktop and 375 px phone viewports |
+| Grafana | `scripts/browser/check-grafana.js` | Both dashboards render; no panel shows a query error; no panel is empty; the `$inverter` template variable expands to the full fleet |
+
+Both exit non-zero on failure and both run in `bootstrap.sh test` and in CI.
+
+Rendering is the assertion rather than a proxy for it. A green query API is not sufficient:
+the datasource can return frames that Grafana still fails to plot, and a template variable can
+fail to expand while every query reports success. Both bugs shipped here and were caught only
+by looking at the rendered page.
+
+The check also asserts the thing that is hardest to spot by hand and was in fact broken during
+development: **a silent live-feed failure looks identical to a working dashboard showing stale
+data.** The PWA check therefore requires the live banner to read `Live`, not merely for the
+page to render.
+
+The live relay itself is covered at the unit level in `api/tests/test_live_socket.py`, which
+pins the properties that make a ticket worth having: single use, and a 30-second life.
 
 ## 7. Load and soak
 
@@ -292,35 +312,109 @@ The sensor-drift test is the subtle one: drift makes PR fall, which looks identi
 weather. The test asserts the alert is **attributed correctly** — comparing `clearness_index`
 against an independent reference separates "the sky is hazy" from "the sensor is lying."
 
-## 9. CI pipeline
+## 9. Verification scripts
 
-```yaml
-stages:
-  - lint:       ruff, eslint, tsc --noEmit
-  - unit:       pytest -m "not integration and not load"    # < 2 min
-  - contract:   pytest -m contract                          # < 1 min
-  - integration: pytest -m integration                      # < 8 min
-  - sql:        pytest tests/test_sql_regression.py          # < 3 min
-  - e2e:        playwright test                             # < 6 min
-  - build:      docker build
-  # nightly
-  - load, soak, physics-sweep
+Six checks that are neither unit tests nor browser tests. Each one catches a class of failure
+the other suites structurally cannot, and each is a hard gate in `bootstrap.sh test`.
+
+| Script | Asserts | Why the rest cannot |
+|---|---|---|
+| `check-pwa-contract.py` | Every endpoint the PWA calls, called exactly as the browser calls it, with the real JWT flow | A contract drift between two codebases that each pass their own tests |
+| `check-doc-sql.py` | Every ```` ```sql ```` block in **every** document executes | Docs are not compiled, so nothing else notices a query that stopped working |
+| `check-live-ws.py` | EMQX's WebSocket listener carries real MQTT frames | Telegraf uses plain TCP on 1883, so no other component exercises the listener |
+| `export-sql.py --check` | `docs/sql/*.sql` matches the document it was generated from | Generated files drift silently |
+| `export-sql.py --verify` | All 40 documented statements execute against the live database | See §5.2 |
+| `backup.py` round-trip | A backup restores into a scratch database with matching row counts | A backup that cannot be restored is not a backup |
+
+`check-live-ws.py` deserves a note, because its scope changed. It used to be "the browser's
+path", when the dashboard connected straight to the broker. It no longer is — the browser goes
+through the API relay — so it now checks the transport *underneath* the relay, and says so.
+Leaving the old description in place would have pointed the next person at an architecture that
+no longer exists.
+
+### Running them individually
+
+```bash
+uv run --project api python scripts/check-pwa-contract.py
+uv run --project api python scripts/check-doc-sql.py
+uv run --project api --with paho-mqtt python scripts/check-live-ws.py
+uv run python scripts/export-sql.py --check
 ```
 
-**The physics sweep** runs nightly across a full simulated year, checking all ten invariants.
-It is nightly because it is slow, and because a seasonal regression should never reach a
-release unnoticed.
+## 10. CI pipeline
 
-## 10. Coverage
+Two jobs, in `.github/workflows/ci.yml`. Triggers on every push to `main` and on
+every pull request.
 
-| Area | Target | Rationale |
+```yaml
+jobs:
+  python:                       # no services needed
+    - ruff check sim/ api/ scripts/*.py
+    - tsc --noEmit (via npm run build)
+    - pytest sim                # 65
+    - pytest api --ignore=test_live.py   # 155
+  integration:                  # brings up the whole stack
+    - ./scripts/bootstrap.sh up
+    - pytest api                # 166, including the live-dialect tests
+    - check-pwa-contract.py, check-doc-sql.py, check-live-ws.py
+    - export-sql.py --check and --verify
+    - check-ui.js, check-grafana.js      # headless browser
+    - backup.py --backup then --restore into a scratch database
+```
+
+Two jobs rather than one because a genuine code failure should not be masked by
+a broken container. Only `test_live.py` is excluded from the unit job: it talks to
+a real InfluxDB and has no skip guard, so it would fail rather than skip.
+
+**Every command runs from its own project directory.** `--project` selects the uv
+environment but does *not* change the working directory, and `[tool.pytest.ini_options]`
+lives in each `pyproject.toml` — so a command run from the repository root
+collects both `sim/tests` and `api/tests` and cannot import either package. This
+cost three failed runs before it was found.
+
+`LOGIN_RATE_LIMIT` is raised for the run: the browser checks perform real logins
+and the API rate-limits logins to 10 per 5 minutes, which several checks in one run
+would otherwise trip — and the symptom is a login rejection, which reads like a
+real failure.
+
+### What CI caught that local testing never could
+
+All of these passed on macOS and failed on the runner:
+
+| Bug | Symptom on Linux | Why macOS hid it |
 |---|---|---|
-| Physics modules | ≥ 95 % | The core value; untested physics is worthless |
-| MQTT publisher | ≥ 90 % | Failure modes are subtle |
-| Alert rules | ≥ 95 % | A missed alert is a real miss |
-| SQL builders | ≥ 90 % | Injection surface |
-| React components | ≥ 70 % | Thin view layer |
-| E2E | 8–12 critical paths | Not exhaustive |
+| Secrets at mode 600 | InfluxDB would not start: `Permission denied` | Docker Desktop is lenient about ownership across the VM boundary; containers run as uid 1500 |
+| Token written under a timestamped filename | 11 live tests 401 | Nothing looks for `api-read-<epoch>.token`, so the API fell back to a bogus token |
+| Tests needing a developer's `.env` | 55 errors, `SystemExit(1)` | The lifespan calls `get_settings()` directly, so `dependency_overrides` cannot reach it |
+
+The general lesson: **a green local suite is evidence about one machine.** Anything
+that depends on uid, file modes, or a file that happens to exist on your disk is
+untested until CI runs it.
+
+### Not implemented
+
+- **Nightly physics sweep.** No scheduled workflow exists. The intent — check the
+  invariants across a full simulated year, because a seasonal regression should not
+  reach a release — is sound and is the most valuable test still missing.
+- **ESLint.** Not configured. `tsc --noEmit` is the only frontend type check.
+- **Coverage measurement.** No tooling, so §10's targets are aspirations, not
+  measurements.
+
+## 11. Coverage
+
+| Area | Target | Status |
+|---|---|---|
+| Physics modules | ≥ 95 % | aspiration, not measured |
+| MQTT publisher | ≥ 90 % | aspiration, not measured |
+| Alert rules | ≥ 95 % | aspiration, not measured |
+| SQL builders | ≥ 90 % | aspiration, not measured |
+| React components | ≥ 70 % | **no tooling** — `web/` has no unit-test framework |
+| Rendered UIs | 2 checks, both headless | **implemented**: `check-ui.js`, `check-grafana.js` |
+
+**These are targets, not measurements.** No coverage tool is wired up, so nothing here is
+enforced. What is enforced, and what has actually caught bugs: 231 tests, six verification
+scripts, two headless render checks, a docs/SQL consistency gate, and a backup round-trip —
+all run by `./scripts/bootstrap.sh test` and by CI on every push.
 
 Coverage is a floor, not a goal. The invariant tests and the PVWatts cross-validation are worth
 more than any coverage percentage, because they check the *numbers* rather than the *lines*.

@@ -33,8 +33,8 @@
 ┌──────────────────┐   ┌──────────────────┐
 │   Grafana        │   │   FastAPI :8000  │   JWT auth
 │   :3000          │   │   /api/now       │   alert rules
-│   SQL datasource │   │   /api/series    │   Web Push
-│   dashboards     │   │   /api/push/*    │
+│   SQL datasource │   │   /api/series    │   MQTT fan-out
+│   dashboards     │   │   /api/live      │
 └──────────────────┘   └────────┬─────────┘
                                   │ REST + JWT
                                   ▼
@@ -145,50 +145,70 @@ HTTP/1.1 and is unaffected — useful to know when debugging.
 
 ```
 .
-├── docker-compose.yml            EMQX, InfluxDB, Telegraf, Grafana
+├── docker-compose.yml            EMQX, InfluxDB, Telegraf, Grafana, API
+├── Makefile                      thin wrapper over scripts/bootstrap.sh
 ├── .env.example                  all configuration, no secrets
+├── .github/workflows/ci.yml      tests, lint, verification, browser checks
 ├── docs/                         these documents
 ├── sim/                          Python simulator
 │   ├── pyproject.toml
-│   ├── config/
-│   │   ├── site.yaml             topology, geometry, equipment
-│   │   └── scenarios/            fault scenario definitions
+│   ├── config/scenarios/demo.yaml
 │   └── src/solar_sim/
-│       ├── config.py             pydantic models
-│       ├── solar.py              solar position, clear-sky, transposition
-│       ├── weather.py            AR(1) clearness index, ramp events
-│       ├── pv.py                 cell temperature, DC model, losses
-│       ├── inverter.py           efficiency curve, clipping, derating
-│       ├── topology.py           site model
+│       ├── main.py               orchestration loop, backfill, --speed
+│       ├── solar.py              pvlib clear-sky / stochastic sky
+│       ├── pv.py                 cell temperature, DC model, losses, clipping
+│       ├── topology.py           site model: 4 inverters, 12 strings
+│       ├── farm.py               per-tick assembly, PR, capacity factor
+│       ├── weather.py            weather-station fields
 │       ├── scenarios.py          fault injection
 │       ├── metrics.py            shared measurement/tag definitions
-│       ├── mqtt_publisher.py     MQTT 5 client, LWT, retained messages
-│       └── main.py               orchestration loop
-├── telegraf/telegraf.conf        mqtt_consumer → influxdb_v2
+│       └── mqtt_publisher.py     MQTT 5 client, LWT, retained messages
+├── telegraf/telegraf.conf        mqtt_consumer -> outputs.influxdb_v2
 ├── scripts/
-│   ├── init-influx.sh            database, tables, Last Value Cache
-│   └── wait-for.sh               readiness gating
+│   ├── bootstrap.sh              the entry point: up/down/reset/status/test/disk
+│   ├── gen-secrets.sh            .env + secrets/admin-token
+│   ├── gen-tls-cert.sh           self-signed cert + CA bundle
+│   ├── influx-init.sh            database, 5 tables, Last Value Cache, tokens
+│   ├── telegraf-entrypoint.sh
+│   ├── backup.py                 backup, restore, retention window (--since)
+│   ├── export-sql.py             generates docs/sql/ from docs/06
+│   ├── check-doc-sql.py          every documented SQL block must execute
+│   ├── check-pwa-contract.py     API <-> PWA contract
+│   ├── check-live-ws.py          the live relay, end to end
+│   ├── inject-fault.py           overheat, hot-weather, dead-inverter, ...
+│   ├── watch.py                  live terminal dashboard
+│   └── browser/
+│       ├── check-ui.js           headless render + live-feed assertion
+│       └── check-grafana.js      headless render of both dashboards
 ├── api/                          FastAPI
 │   ├── pyproject.toml
+│   ├── config/alerts.yaml        the 12 declarative rules
+│   ├── tests/conftest.py         pins runtime config so tests need no .env
 │   └── src/solar_api/
-│       ├── main.py
-│       ├── auth.py               JWT
-│       ├── influx.py             InfluxDB 3 client, SQL builders
-│       ├── series.py             /api/series, /api/now
-│       ├── alerts.py             rule engine
-│       └── push.py               Web Push
+│       ├── main.py               app, all routes, lifespan, PWA mount
+│       ├── config.py             Settings, validate_runtime
+│       ├── auth.py               JWT, login rate limit
+│       ├── influx.py             InfluxDB 3 client over HTTPS
+│       ├── sql.py                every SQL builder + the allowlists
+│       ├── alerts.py             rule engine (pure, injectable clock)
+│       ├── alert_config.py       loads and validates alerts.yaml
+│       ├── alert_service.py      MQTT subscriber, fan-out, persistence
+│       └── live_tickets.py       single-use tickets for GET /api/live
 ├── web/                          React PWA
 │   ├── package.json
 │   ├── vite.config.ts
-│   ├── public/                   manifest, service worker, icons
+│   ├── public/sw.js              service worker
 │   └── src/
-│       ├── mqtt/                 WebSocket client + reconnect
-│       ├── components/           tiles, charts, string heatmap
-│       ├── views/                live, history, alerts
-│       └── push.ts               Web Push subscription
-└── grafana/provisioning/
-    ├── datasources/influxdb.yaml
-    └── dashboards/               dashboard JSON
+│       ├── App.tsx               layout, login, polling
+│       ├── api/client.ts         typed REST client
+│       ├── mqtt/live.ts          the same-origin live relay
+│       ├── hooks/index.ts        auth + polling hooks
+│       ├── format.ts             units, status labels
+│       └── components/           panels.tsx, LineChart, ConnectionBanner
+└── grafana/
+    ├── provisioning/datasources/influxdb.yaml
+    ├── provisioning/dashboards/solar.yaml
+    └── dashboards/               the two dashboard JSON files
 ```
 
 ## 5. Key architectural decisions
@@ -200,7 +220,7 @@ primary key is the ordered set of tags plus time, and tag definitions cannot be 
 afterwards. If the simulator publishes first with the wrong tag set, the table is permanently
 wrong and must be dropped and re-ingested.
 
-Mitigation: `scripts/init-influx.sh` creates all five tables with the correct tag and field
+Mitigation: `scripts/influx-init.sh` creates all five tables with the correct tag and field
 definitions **before** the simulator's first publish. Compose healthchecks enforce this
 ordering. The schema is a deliberate artefact, not something that emerges from the data.
 
@@ -300,7 +320,7 @@ one cost real debugging time and would cost the same to the next person.
 | InfluxDB offline admin token file must be JSON: `{"token": "apiv3_…", "name": "…", "expiration": null}`, mode 0600 | A bare token file fails to parse and the server will not start |
 | Tokens must begin with `apiv3_` | Otherwise "Invalid token format" |
 | `create token --admin --offline` produces a token the server does not accept | Must create online and parse stdout |
-| InfluxDB 3 Core 3.11 cannot create permission-scoped tokens | See [Security §4.3](./04-security.md#43-influxdb-tokens-and-least-privilege-addresses-t2-t4) |
+| InfluxDB 3 Core 3.11 cannot create permission-scoped tokens | See [Security §4.4](./04-security.md#44-influxdb-tokens-and-least-privilege-addresses-t2-t4) |
 | `influxdb3 show databases` renders an ASCII table; the column is `iox::database` | `awk '{print $1}'` does not work for existence checks |
 | `influxdb3 show system` rejects `--host`/`--token` | Detect Last Value Caches via `SELECT … FROM system.last_caches` |
 | `/ping` requires auth | Healthcheck needs `--disable-authz=health,ping` |

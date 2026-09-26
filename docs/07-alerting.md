@@ -38,7 +38,7 @@ Three modules, split along the line that makes the interesting part testable:
 
 | Module | Responsibility | I/O |
 |---|---|---|
-| `alerts.py` | rules, conditions, the debounce/hysteresis state machine | none |
+| `alerts.py` | rules, conditions, the debounce/re-arm state machine | none |
 | `alert_config.py` | read and validate `config/alerts.yaml` | file |
 | `alert_service.py` | MQTT subscription, context injection, persistence | broker, database |
 
@@ -112,7 +112,7 @@ publishing, cheerfully reports `status_code: 3` (producing), and outputs
 nothing. Every per-device rule that reads the status code says the device is
 fine. Only cross-referencing the weather station reveals it.
 
-## 4. Debounce, hysteresis, re-arm
+## 4. Debounce and re-arm
 
 Three distinct behaviours, all in `RuleEngine.observe()`.
 
@@ -127,10 +127,19 @@ Debounce is **time-based, not message-count-based**. A pending rule is promoted
 in `tick()` as well as in `observe()`, so a device publishing less often than the
 debounce is long still gets its alert.
 
-**Hysteresis / re-arm.** An alert fires once, on the transition into firing, and
-stays firing until the condition clears. At that point it emits exactly one
-`resolved` event and re-arms. A condition that flaps across its threshold
-produces one alert and one resolution per episode, never one per crossing.
+**Re-arm.** An alert fires once, on the transition into firing, and stays firing
+until the condition clears. At that point it emits exactly one `resolved` event
+and re-arms. A condition that flaps across its threshold produces one alert and
+one resolution per episode, never one per crossing.
+
+Worth being precise about the vocabulary, because the name is a common
+over-claim. This section was previously headed "debounce, hysteresis, re-arm",
+and there is **no hysteresis here in the numeric sense**: no `clear_threshold`,
+no separate clearing condition. A rule clears as soon as `matches()` stops
+being true. The state machine does suppress flapping -- one alert and one
+resolution per *episode* rather than one per crossing -- but that follows from
+firing on transitions and re-arming, not from a deadband. If a future change
+introduces a real clear threshold, this section is where it belongs.
 
 **Cancellation.** A condition that clears during the debounce window never
 alerted at all, and leaves no trace. A 40 s spike against a 90 s debounce is

@@ -130,7 +130,7 @@ Credentials live in `.env` (gitignored, mode 600); token files are in `secrets/`
 docs/                 design documentation (9 documents)
 docs/sql/             35 runnable .sql files, generated from docs/06-sql-examples.md
 sim/                  Python simulator        (host-run, 65 tests)
-api/                  FastAPI backend         (in compose, 155 tests)
+api/                  FastAPI backend         (in compose, 166 tests)
 api/config/alerts.yaml declarative alert rules
 web/                  React PWA              (built to web/dist, served by the API at /)
 telegraf/             MQTT -> InfluxDB config
@@ -151,7 +151,7 @@ Only the simulator runs on the host; the other five components run in Docker.
 | 2 | InfluxDB schema: 5 tables + Last Value Cache, created before first write | DONE |
 | 3 | Ingest: Telegraf `mqtt_consumer` → InfluxDB, verified end to end | DONE |
 | 4 | Simulator: pvlib physics, fault scenarios, per-inverter MQTT client with LWT | DONE (65 tests) |
-| 5 | FastAPI: auth, `/api/now` off the LVC, `/api/series`, `/api/explore` | DONE (155 tests) |
+| 5 | FastAPI: auth, `/api/now` off the LVC, `/api/series`, `/api/explore` | DONE (166 tests) |
 | 6 | PWA: live tiles over MQTT/WebSocket | DONE |
 | 7 | Alerting: threshold + staleness rules, in-app feed, event persistence | DONE |
 | 8 | Grafana dashboards | DONE (2 dashboards, 13 panel queries) |

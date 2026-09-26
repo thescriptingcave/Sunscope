@@ -1,14 +1,22 @@
-"""Prove the PWA's live path works: MQTT over WebSocket, as the browser does it.
+"""Prove EMQX's WebSocket listener works, which the live relay depends on.
 
-The dashboard subscribes to `ws://localhost:8083/mqtt` straight from the browser.
-Nothing else in the stack exercises that path -- Telegraf speaks plain TCP on
-1883 -- so a silent break here would leave the live tiles frozen while every
-other health check stayed green.
+NOTE: the browser no longer connects to the broker. It opens a same-origin
+WebSocket to the API at `GET /api/live`, and the API relays frames from the
+MQTT subscription it already holds for the alert engine. So this script is no
+longer "the browser's path" -- it checks the transport *underneath* it.
 
-Uses paho-mqtt over its WebSocket transport, which is the same shape of
-connection `mqtt.js` makes in the browser: an RFC 6455 upgrade carrying MQTT 3.1.1
-frames. A real client is used rather than a hand-rolled one so this checks the
-*protocol* works, not that a bespoke encoder happens to agree with itself.
+That is still worth having, and for the original reason: nothing else in the
+stack exercises EMQX's WebSocket listener. Telegraf speaks plain TCP on 1883,
+so if the listener breaks the relay goes silent and every dashboard tile freezes
+while the rest of the health surface stays green.
+
+What it deliberately does not cover is the relay itself -- ticket
+authentication, fan-out, re-arm. That is `api/tests/test_live_socket.py` at the
+unit level and `scripts/browser/check-ui.js` for the rendered result.
+
+Uses paho-mqtt over its WebSocket transport: an RFC 6455 upgrade carrying MQTT
+3.1.1 frames. A real client rather than a hand-rolled one, so this checks the
+*protocol* works and not that a bespoke encoder agrees with itself.
 
 Run: uv run --project api --with paho-mqtt python scripts/check-live-ws.py
 """
@@ -144,7 +152,7 @@ def main() -> int:
     if "telemetry" not in received:
         print("  FAIL  the per-inverter wildcard matched nothing; inverter tiles would stay empty")
         return 1
-    print("\nThe browser live path works: MQTT over WebSocket, with no API or database in the loop.")
+    print("\nEMQX's WebSocket listener works, so the API's live relay has a transport to relay over.")
     return 0
 
 

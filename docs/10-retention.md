@@ -1,4 +1,4 @@
-# 9. Data retention: what InfluxDB 3 Core can and cannot do
+# 10. Data retention: what InfluxDB 3 Core can and cannot do
 
 Every claim here was verified against the running stack (`influxdb:3.11-core`,
 file object store), not inferred from documentation. Several of the obvious

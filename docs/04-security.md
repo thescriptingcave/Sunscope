@@ -117,7 +117,44 @@ authorization = [
 That last rule is the important one: the simulator is **publish-only**. Compromising it must not
 grant the ability to read the whole farm or to inject events that trigger alerts.
 
-### 4.3 InfluxDB tokens and least privilege (addresses T2, T4)
+### 4.3 File permissions on the secret directory — a deliberate weakening
+
+`scripts/bootstrap.sh` sets `secrets/` to mode 777 and `secrets/*.token` to 644, so the
+containers can read them. This is **worse than the 600/700 the generators write**, and it is
+deliberate. It is recorded here because it looks like a mistake otherwise, and because someone
+will eventually try to "fix" it back and break the stack.
+
+Why it is required:
+
+- The containers run as **uid 1500** (`influxdb3`) and bind mounts preserve host modes. With
+  tokens at 600 and `secrets/tls/` at 700, owned by the invoking user, InfluxDB refuses to
+  start on any host that enforces ownership across the container boundary:
+  `Failed to initialize admin token from file: ... Permission denied (os error 13)`.
+- macOS **hides this entirely.** Docker Desktop's file sharing is lenient about ownership
+  across the VM boundary, so the stack works perfectly on a Mac and fails on a Linux runner.
+  The first three CI runs failed on this and nothing was wrong locally.
+- `secrets/` additionally needs to be *writable*, not just readable, because `influx-init`
+  mints the per-component tokens and writes them back into that same directory — and when a
+  token is regenerated under a fresh catalog name it creates a new file outright.
+- The token files are created **by the container**, so it is the only party that can set their
+  mode; the host user cannot `chmod` a file it does not own, which is why `bootstrap.sh`
+  cannot repair this afterwards.
+
+Scope is deliberate and narrow: `secrets/` is 777, `secrets/*.token` are 644, and
+`secrets/tls/` stays 755 because only `gen-tls-cert.sh` writes there. `.env` keeps **600**,
+because only the host ever reads it — bootstrap and compose's variable substitution, never a
+container.
+
+**The trade-off, stated plainly:** these files are world-readable on the host. That is the
+standard requirement for bind-mounted secrets and is acceptable here because they are local
+development tokens in a gitignored directory, never production credentials. **If this ever held
+real credentials**, the answer is Docker's top-level `secrets:` with an explicit mode, or a
+secret manager — not a wider `chmod`.
+
+The generators still write 600/700 first. `bootstrap.sh` relaxes them after generation, so
+there is no window in which a secret is loose and nothing is running.
+
+### 4.4 InfluxDB tokens and least privilege (addresses T2, T4)
 
 **Correction: the planned design does not work as written.** This section originally specified
 separate read-only and write-only tokens, assuming `influxdb3 create token` supports permission
@@ -161,7 +198,7 @@ not a config tweak.
 > ANSI colour codes. `scripts/influx-init.sh` does this, then verifies the new token works
 > before it continues.
 
-### 4.4 SQL injection prevention (addresses T3)
+### 4.5 SQL injection prevention (addresses T3)
 
 InfluxDB 3 Core supports `$name` parameters, but with two sharp restrictions that are easy to
 get wrong:
@@ -211,7 +248,7 @@ Because parameters cannot be used in `INTERVAL` literals, time ranges need a sma
 take the range as **timestamps** (`$start_time`, `$end_time`) and compute any bucket size
 server-side from an allowlisted enum, rather than accepting an `INTERVAL` string from the client.
 
-### 4.5 Secrets handling (addresses T4)
+### 4.6 Secrets handling (addresses T4)
 
 - `.env` is gitignored; `.env.example` holds placeholders only
 - Generate tokens and VAPID keys at setup, never commit real values
@@ -226,7 +263,7 @@ server-side from an allowlisted enum, rather than accepting an `INTERVAL` string
 *.key
 ```
 
-### 4.6 API auth (addresses T5)
+### 4.7 API auth (addresses T5)
 
 - JWT with an expiry, HS256, secret from env
 - Password hashed with argon2 or bcrypt — never stored or compared in plaintext
@@ -235,7 +272,7 @@ server-side from an allowlisted enum, rather than accepting an `INTERVAL` string
 - Rate limiting on `/api/auth/login` (a brute-force vector) and on `/api/series` (DoS via
   expensive range scans)
 
-### 4.7 XSS protection (addresses T8)
+### 4.8 XSS protection (addresses T8)
 
 Event `message` and `source` strings originate from the simulator but must be treated as
 untrusted — a compromised or buggy device could publish arbitrary text.
@@ -244,7 +281,7 @@ untrusted — a compromised or buggy device could publish arbitrary text.
 - Enforce a Content Security Policy
 - Do not interpolate telemetry into `href` or `src` without validation
 
-### 4.8 Denial of service (addresses T7)
+### 4.9 Denial of service (addresses T7)
 
 | Vector | Control |
 |---|---|
@@ -253,7 +290,7 @@ untrusted — a compromised or buggy device could publish arbitrary text.
 | Grafana dashboard spam | Auth required; provisioning read-only where possible |
 | InfluxDB write flood | Write token scoped to one database; rate limit at the proxy |
 
-### 4.9 Supply chain (addresses T10)
+### 4.10 Supply chain (addresses T10)
 
 - **Pin every image to an explicit version.** `influxdb:latest` now resolves to InfluxDB 3
   Core — a floating tag that silently changes major versions.

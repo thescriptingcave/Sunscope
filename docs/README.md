@@ -45,7 +45,7 @@ Used consistently across every document. Changing any of these requires updating
 | Web + mobile | Single React PWA | One codebase, installable to iOS/Android, live data over MQTT/WebSocket |
 | Backend | FastAPI + JWT | Queries InfluxDB, evaluates alert rules, relays MQTT to the PWA |
 | Faults | Included | Otherwise alert rules never fire and dashboard panels stay empty |
-| HTTPS | Localhost only (initially) | Web Push deferred until a tunnel or domain exists — see Security doc |
+| HTTPS | Localhost only (initially) | The live feed is relayed through the API, so HTTPS needs no broker exposure — see Security doc |
 
 ## Verified platform constraints
 
@@ -73,7 +73,7 @@ Grafana setup. Full detail and source links in [SQL Examples](./06-sql-examples.
 2. **Simulator** — topology, physics, faults, MQTT publisher with LWT
 3. **Ingest** — Telegraf, pre-created schema, Last Value Cache
 4. **Grafana** — SQL datasource + dashboards
-5. **FastAPI** — auth, `/api/now`, `/api/series`, push subscription
+5. **FastAPI** — auth, `/api/now`, `/api/series`, and the live MQTT fan-out
 6. **PWA** — live tiles over MQTT/WebSocket
 7. **Alerting** — threshold rules + in-app feed
 8. **Polish** — scenarios, README

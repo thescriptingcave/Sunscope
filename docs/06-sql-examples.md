@@ -888,7 +888,7 @@ Sent to `POST /api/v3/query_sql`. Four restrictions that matter for the API desi
 
 Because parameters cannot go in `INTERVAL` literals, the API takes time ranges as timestamp
 parameters and computes any bucket size server-side from an allowlist. See
-[Security §4.4](./04-security.md#44-sql-injection-prevention-addresses-t3).
+[Security §4.5](./04-security.md#45-sql-injection-prevention-addresses-t3).
 
 ### E9 — Fleet health summary
 
