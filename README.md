@@ -102,7 +102,9 @@ web/                  React PWA              (built to web/dist, served by the A
 telegraf/             MQTT -> InfluxDB config
 grafana/provisioning/ datasource + dashboard provisioning
 scripts/              bootstrap, gen-secrets, gen-tls-cert, influx-init, telegraf-entrypoint,
-                      check-pwa-contract, check-live-ws, check-doc-sql, inject-fault
+                      check-pwa-contract, check-live-ws, check-doc-sql, inject-fault,
+                      watch (live terminal dashboard)
+scripts/browser/      check-ui: headless browser render of the PWA
 Makefile              thin wrapper over scripts/bootstrap.sh
 ```
 
@@ -321,25 +323,72 @@ else is speaking for it.
 `comms-loss` is the one worth running. It is the failure that a Last Will cannot
 detect, and the reason the staleness rules exist.
 
+### Watch it live in a terminal
+
+If you would rather not open a browser — over SSH, on a machine with no GUI, or
+just to keep an eye on things while doing something else — there is a terminal
+dashboard. It subscribes to the same MQTT/WebSocket path the PWA uses, so it
+shows the live feed rather than a database read.
+
+```bash
+uv run --project api --with paho-mqtt python scripts/watch.py
+```
+
+```
+  SOLAR FARM — mojave   1.0 MWac / 1.19 MWp
+  live over MQTT/WebSocket, updated 0s ago
+
+  SITE
+    power         1000.0 kW  ████████████████████████████
+    perf.ratio     0.836  ███████████████████████······
+    yield         236.2 kWh today
+    online        4 inverters, 12 strings
+
+  WEATHER
+    GHI           783.6 W/m²  ████████████████████········
+    air            25.3 °C      wind 2.5 m/s
+
+  INVERTERS
+    INV-01       250.0 kW ██████████████████ eff  89.8%   25.9°C  CLIP
+    INV-02       180.0 kW █████████████····· eff  83.3%   96.0°C  3
+    INV-03       250.0 kW ██████████████████ eff  89.8%   25.9°C  CLIP
+    INV-04       250.0 kW ██████████████████ eff  89.8%   25.9°C  CLIP
+
+  ALERTS
+    ● CRITICAL heatsink_critical  INV-02  value=96.0 threshold=90.0
+    ● WARNING heatsink_high  INV-02  value=96.0 threshold=70.0
+```
+
+`--once` renders a single frame and exits, which is handy in a script.
+
 ### Verify the dashboard's view of the data
 
 ```bash
-uv run --project api python scripts/check-pwa-contract.py            # every endpoint, as the browser calls it
-uv run --project api --with paho-mqtt python scripts/check-live-ws.py  # the live MQTT-over-WebSocket path
-uv run --project api python scripts/check-doc-sql.py                  # all 35 SQL examples in the docs
+./scripts/bootstrap.sh test          # all of the below, in order
 ```
-
-These exist because each one has already caught something:
 
 | Script | Catches | Has caught |
 |---|---|---|
 | `check-pwa-contract` | wrong types, impossible numbers, unrenderable timestamps, a dead alert engine | a 132 % capacity factor from a unit error in the simulator |
-| `check-live-ws` | a broken browser live path that nothing else exercises | — (path had no coverage at all) |
+| `check-live-ws` | a broken broker WebSocket path | — (path had no coverage at all) |
 | `check-doc-sql` | docs that have drifted from the database | a query teaching a bug; a column copied from an unrelated project |
+| `check-ui` | anything that only a real browser can see | the live feed throwing `mqttModule.connect is not a function` while all 208 tests passed |
 
-`check-live-ws` matters most: Telegraf speaks plain TCP on 1883, so the WebSocket
-listener the PWA depends on is the one component with no other coverage. A break
-there leaves the live tiles frozen while every other health check stays green.
+`check-ui` earns its place. It logs in for real, waits for MQTT data to land in
+the tiles, and fails if the feed never reports Live. Type checking could not
+catch the bug it found: Vite bundles mqtt.js to a chunk exporting only
+`default`, so `mod.connect` is undefined in the browser even though
+`typeof import('mqtt')` declares it. The dashboard rendered perfectly and was
+completely dead. It also writes screenshots to `shots/`.
+
+```bash
+npm --prefix scripts/browser install   # once
+node scripts/browser/check-ui.js       # desktop + phone viewports
+```
+
+It is part of `./scripts/bootstrap.sh test`, so it runs in CI. Note that it
+performs a real login, and the API rate-limits logins to 10 per 5 minutes —
+repeated local runs will need `LOGIN_RATE_LIMIT` raised or a pause between them.
 
 ## Gotchas
 

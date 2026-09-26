@@ -243,6 +243,18 @@ run_tests() {
   else
     warn "EMQX is not running; skipped the live WebSocket check"
   fi
+
+  # The only check that can see a UI-level failure. Everything above is
+  # structural, and all of it stayed green while the live feed was throwing in
+  # the browser. Playwright is installed on demand.
+  step "Browser check (renders the PWA in headless Chromium)"
+  if [[ ! -d scripts/browser/node_modules ]]; then
+    info "installing Playwright (first run only)"
+    (cd scripts/browser && npm install --no-fund --no-audit >/dev/null 2>&1) \
+      || die "npm install failed in scripts/browser/"
+  fi
+  node scripts/browser/check-ui.js \
+    || die "the PWA did not render, or its live feed did not come up"
 }
 
 usage() {

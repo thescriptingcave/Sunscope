@@ -1,0 +1,12 @@
+{
+  "name": "solar-browser-checks",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Headless browser checks for the PWA. Kept out of web/ so the app bundle carries no test tooling.",
+  "scripts": {
+    "check": "node check-ui.js"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  }
+}

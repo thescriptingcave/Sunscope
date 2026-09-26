@@ -61,6 +61,12 @@ export function KpiTiles({
   const pr = rollup?.prRatio ?? num(cached?.pr_ratio)
   const online = rollup?.invertersOnline ?? (cached ? num(cached.inverters_online) : null)
   const clipping = readings.filter((r) => r.clipping).length
+  // The clipping count can only be trusted once live readings have arrived.
+  // Claiming "no clipping" while the feed is still empty is a false all-clear:
+  // the inverter cards directly below, fed from the API cache, can show
+  // CLIPPING on all four at the same moment. Silence is not a healthy reading.
+  const clippingSub =
+    readings.length === 0 ? 'awaiting live data' : clipping > 0 ? `${clipping} clipping` : 'no clipping'
 
   return (
     <div className="tiles">
@@ -76,7 +82,7 @@ export function KpiTiles({
         // Fleet size comes from the API rather than a hardcoded 4, so the tile
         // stays correct if the topology ever changes.
         value={online === null ? '--' : `${online} / ${fleetSize}`}
-        sub={clipping > 0 ? `${clipping} clipping` : 'no clipping'}
+        sub={clippingSub}
         tone={clipping > 0 ? 'warn' : undefined}
       />
     </div>

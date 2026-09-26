@@ -22,8 +22,28 @@ import type { MqttClient } from 'mqtt'
  * the first screen: the cold-load state comes from the API's Last Value Cache,
  * and the live feed connects a moment later. Splitting it keeps the critical
  * path small on a phone, which is the whole point of shipping this as a PWA.
+ *
+ * The interop shape must be handled at runtime, not only in types. Vite bundles
+ * mqtt.js to a chunk exporting **only** `default`, so `mod.connect` is
+ * undefined in the browser even though TypeScript's `typeof import('mqtt')`
+ * declares a named `connect`. Reading `.connect` off the namespace type-checks
+ * cleanly and then throws `mqttModule.connect is not a function` at runtime,
+ * leaving the dashboard on a permanent "Connecting" banner with every tile
+ * zeroed. Type checking could never have caught this -- only loading the page
+ * in a real browser did.
  */
-type MqttModule = typeof import('mqtt')
+type MqttModule = {
+  default?: { connect: typeof import('mqtt').connect }
+  connect?: typeof import('mqtt').connect
+}
+
+function connectFactory(mod: MqttModule): typeof import('mqtt').connect {
+  const factory = mod.default?.connect ?? mod.connect
+  if (typeof factory !== 'function') {
+    throw new Error('mqtt module exposes no connect() — the bundler changed its export shape')
+  }
+  return factory
+}
 
 /** EMQX WebSocket listener, per docker-compose.yml (MQTT_WS_PORT). */
 const WS_URL = (() => {
@@ -103,24 +123,26 @@ export class LiveFeed {
     return { readings: [...this.readings.values()], rollup: this.rollup, at: Date.now() }
   }
 
-  private mqttModule: MqttModule | null = null
+  private factory: typeof import('mqtt').connect | null = null
 
   async connect(): Promise<void> {
     if (this.client) return
     this.setState('connecting')
 
-    if (!this.mqttModule) {
+    if (!this.factory) {
       try {
-        this.mqttModule = await import('mqtt')
-      } catch {
+        this.factory = connectFactory(await import('mqtt'))
+      } catch (err) {
         // Without the broker client the app still works, showing cached state
-        // and history. It is a degraded mode, not a fatal error.
+        // and history. It is a degraded mode, not a fatal error -- but it must
+        // say so rather than looking like a quiet, healthy dashboard.
+        console.error('MQTT live feed unavailable:', err)
         this.setState('offline')
         return
       }
     }
 
-    this.client = this.mqttModule.connect(WS_URL, {
+    this.client = this.factory(WS_URL, {
       // The broker has no authentication in the local dev stack; see
       // docs/04-security.md. It is bound to loopback for exactly this reason.
       reconnectPeriod: 2000,

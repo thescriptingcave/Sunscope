@@ -33,6 +33,8 @@ logs/
 *.log
 # Written by scripts/bootstrap.sh when it starts the simulator on the host.
 .sim.pid
+# Screenshots from scripts/browser/check-ui.js; regenerate rather than commit.
+shots/
 
 # --- Editors / OS ---
 .DS_Store
