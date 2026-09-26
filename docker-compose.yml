@@ -1,0 +1,238 @@
+# Solar farm simulator — local development stack.
+#
+# Every published port binds to 127.0.0.1. This is load-bearing, not stylistic:
+# EMQX ships with no authentication enabled, and InfluxDB/Grafana ship with
+# default credentials. See docs/04-security.md before changing any binding.
+
+name: solar-sim
+
+services:
+  emqx:
+    image: emqx/emqx:5.8.6
+    container_name: solar-emqx
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MQTT_PORT:-1883}:1883"          # MQTT over TCP
+      - "127.0.0.1:${MQTT_WS_PORT:-8083}:8083"        # MQTT over WebSocket (PWA)
+      - "127.0.0.1:${MQTT_EMQX_DASHBOARD_PORT:-18083}:18083"  # EMQX console
+    environment:
+      EMQX_DASHBOARD__DEFAULT_USERNAME: ${EMQX_DASHBOARD_USERNAME:-admin}
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASSWORD:-admin}
+      # Node name must be a valid DNS label (RFC 1123): letters, digits, hyphens.
+      EMQX_NODE__NAME: emqx@127.0.0.1
+    volumes:
+      - emqx-data:/opt/emqx/data
+      - emqx-log:/opt/emqx/log
+    healthcheck:
+      # 18083 serves the HTTP API once the node is accepting connections.
+      test: ["CMD", "curl", "-fsS", "http://localhost:18083/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  influxdb:
+    image: influxdb:3.11-core
+    container_name: solar-influxdb
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8181:8181"
+    # Pinned: the `latest` tag now resolves to InfluxDB 3 Core, so a floating
+    # tag can change the major version under you.
+    command:
+      - serve
+      - --node-id=solar-node
+      - --object-store=file
+      - --data-dir=/var/lib/influxdb3
+      - --http-bind=0.0.0.0:8181
+      # TLS is REQUIRED, not optional. Grafana queries InfluxDB 3 over Flight
+      # SQL, which is gRPC, and gRPC will not speak to a plaintext server.
+      # Scripts/gen-tls-cert.sh generates this self-signed pair.
+      - --tls-cert=/etc/influxdb3/secrets/tls/server.crt
+      - --tls-key=/etc/influxdb3/secrets/tls/server.key
+      # Offline admin token file, created by scripts/gen-secrets.sh. Mounting a
+      # file keeps the token out of the container environment, where it would
+      # be visible via `docker inspect`.
+      #
+      # The file must be JSON and the token must start with "apiv3_":
+      #   {"token": "apiv3_...", "name": "solar-admin", "expiration": null}
+      # "expiration" may be omitted. It must be mode 0600.
+      - --admin-token-file=/etc/influxdb3/secrets/admin-token
+      # The Docker healthcheck needs an unauthenticated liveness endpoint.
+      # This disables authz for health/ping ONLY -- both return no data and no
+      # telemetry. Every data and admin endpoint stays authenticated.
+      - --disable-authz=health,ping
+    environment:
+      INFLUXDB3_NODE_ID: solar-node
+      INFLUXDB3_OBJECT_STORE: file
+      INFLUXDB3_DATA_DIR: /var/lib/influxdb3
+    volumes:
+      - influx-data:/var/lib/influxdb3
+      # Mount the directory, not the single file. Bind-mounting a file pins the
+      # inode, so regenerating the token by delete+recreate leaves the container
+      # reading the old, deleted inode.
+      - ./secrets:/etc/influxdb3/secrets:ro
+    healthcheck:
+      # TLS-aware, because the server only speaks https now. -k because the
+      # certificate is self-signed.
+      test: ["CMD", "curl", "-fsSk", "https://localhost:8181/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  # One-shot initialisation: database, tables, Last Value Cache, component
+  # tokens. Must complete BEFORE telegraf starts, because InfluxDB 3 tag
+  # definitions are immutable once a table exists.
+  influx-init:
+    image: influxdb:3.11-core
+    container_name: solar-influx-init
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "/init/influx-init.sh"]
+    environment:
+      INFLUX_DB: ${INFLUX_DB:-solar}
+      INFLUX_URL: https://influxdb:8181
+      INFLUX_ADMIN_TOKEN: ${INFLUX_ADMIN_TOKEN}
+      SECRETS_DIR: /etc/influxdb3/secrets
+    volumes:
+      - ./scripts/influx-init.sh:/init/influx-init.sh:ro
+      - ./secrets:/etc/influxdb3/secrets
+    restart: "no"
+
+  telegraf:
+    image: telegraf:1.36
+    container_name: solar-telegraf
+    restart: unless-stopped
+    depends_on:
+      emqx:
+        condition: service_healthy
+      influx-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+      - ./scripts/telegraf-entrypoint.sh:/init/entrypoint.sh:ro
+      - ./secrets:/run/secrets:ro
+      - telegraf-buffer:/var/lib/telegraf
+    environment:
+      # InfluxDB 3 Core serves HTTPS on 8181 (not 8086, which was v2).
+      # The certificate is self-signed, so verification is skipped.
+      INFLUX_URL: https://influxdb:8181
+      INFLUX_DB: ${INFLUX_DB:-solar}
+      INFLUX_WRITE_TOKEN_FILE: /run/secrets/telegraf-write.token
+    entrypoint: ["/bin/sh", "/init/entrypoint.sh"]
+    healthcheck:
+      # Liveness only: the telegraf image has no shell HTTP client. Real
+      # ingestion health is asserted by tests/integration, not by a probe.
+      test: ["CMD", "telegraf", "--version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  grafana:
+    image: grafana/grafana:12.2.0
+    container_name: solar-grafana
+    restart: unless-stopped
+    depends_on:
+      influx-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    env_file:
+      - .env
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Required for the InfluxDB SQL query editor in Grafana 12.2+.
+      GF_FEATURE_TOGGLES_ENABLE: ${GRAFANA_FEATURE_TOGGLES:-newInfluxDSConfigPageDesign}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_LOG_LEVEL: warn
+      # Grafana's InfluxDB Flight SQL (gRPC) client ignores every TLS option in
+      # the datasource jsonData -- insecureSkipVerify, tlsSkipVerify, tlsCACert
+      # and tlsCAData are all read by the HTTP client but not by the gRPC dial.
+      # The gRPC stack is Go, which honours SSL_CERT_FILE, so the self-signed
+      # InfluxDB certificate is trusted by way of a combined CA bundle.
+      SSL_CERT_FILE: /run/secrets/tls/ca-bundle.crt
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./secrets:/run/secrets:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # API
+  #
+  # Containerised so the stack comes up as a unit. This matters more than it
+  # looks: the API is now a required component for the PWA and the alert engine,
+  # and a split stack -- containers up, API still in a forgotten terminal --
+  # produces a blank dashboard while every container reports healthy.
+  #
+  # The source is bind-mounted and uvicorn runs with --reload, so the edit loop
+  # survives. The simulator stays host-run; that is where iteration actually
+  # happens, and it is the physics that changes most.
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    image: solar-api:dev
+    container_name: solar-api
+    restart: unless-stopped
+    depends_on:
+      influx-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    env_file:
+      - .env
+    environment:
+      # Inside the compose network the server is reachable by its service name,
+      # which the certificate's SAN already covers, so verification stays real.
+      INFLUX_URL: https://influxdb:8181
+      INFLUX_DB: ${INFLUX_DB:-solar}
+      # Read the token and CA from files, so neither is in the container
+      # environment where `docker inspect` would expose it.
+      INFLUX_TOKEN_FILE: /run/secrets/api-read.token
+      INFLUX_CA_BUNDLE: /run/secrets/tls/ca-bundle.crt
+      API_HOST: 0.0.0.0
+      API_PORT: "8000"
+      PWA_DIST: /web/dist
+      ALERT_RULES_FILE: /app/config/alerts.yaml
+      # The alert engine subscribes to the broker for the process lifetime. The
+      # PWA talks to EMQX directly, but the engine cannot: the browser's live
+      # path stops at the edge, and alerting has to keep working regardless.
+      MQTT_HOST: emqx
+      MQTT_PORT: "1883"
+      # The PWA dev server on :5173. Same-origin in production, where the API
+      # serves the built bundle and CORS is not involved at all.
+      API_CORS_ORIGINS: http://localhost:5173,http://localhost:8000,http://127.0.0.1:5173,http://127.0.0.1:8000
+    volumes:
+      - ./api/src:/app/src
+      - ./secrets:/run/secrets:ro
+      # The built PWA, served by the API at / so the whole app is one origin.
+      - ./web/dist:/web/dist:ro
+      # Alert rules are data, not code: mounted so thresholds can be tuned
+      # during commissioning without rebuilding the image.
+      - ./api/config:/app/config:ro
+    healthcheck:
+      # /healthz is deliberately unauthenticated, so this needs no token.
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+volumes:
+  emqx-data:
+  emqx-log:
+  influx-data:
+  telegraf-buffer:
+  grafana-data:

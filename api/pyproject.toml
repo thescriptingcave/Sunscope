@@ -1,0 +1,69 @@
+[project]
+name = "solar-api"
+version = "0.1.0"
+description = "Backend API for the solar farm simulator"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "httpx>=0.27",
+    "pyjwt>=2.9",
+    "pyyaml>=6.0",
+    "aiomqtt>=2.0",
+]
+
+# NOTE: the official InfluxDB 3 client (`influxdb3-python`) is deliberately NOT
+# used. Two reasons, both learned the hard way:
+#
+#   1. `InfluxDBClient3` exposes no `query_with_parameters`. InfluxDB 3 Core
+#      parameter binding is `$name` in WHERE predicates only, and that is the
+#      entire SQL-injection defence in docs/04-security.md. A client that cannot
+#      pass parameters cannot use it.
+#   2. It queries over Flight SQL (gRPC), which is the same transport that made
+#      Grafana fail. The HTTP `/api/v3/query_sql` endpoint needs no gRPC, accepts
+#      `params` in the request body, and lets us pin the CA explicitly.
+#
+# So this talks to `/api/v3/query_sql` over HTTPS with httpx.
+#
+# A JSON parser and an HTTP client are a thin surface, and it gives exact
+# control over parameter binding and certificate trust.
+
+[project.scripts]
+solar-api = "solar_api.main:run"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+    "ruff>=0.8",
+    "anyio>=4.15.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/solar_api"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# tests/ is not a package, so test modules import each other by bare name.
+pythonpath = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "S"]
+ignore = [
+    "S101",   # assert is fine in tests
+    "B008",   # Depends()/Query() in defaults is the FastAPI idiom
+    "S105",   # Field *names* that look like secrets are not secrets
+    "S106",   # ditto for test fixtures and constructor kwargs
+]

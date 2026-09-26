@@ -1,0 +1,173 @@
+# Alert rules for the Mojave site.
+#
+# Declarative so that thresholds can be tuned during commissioning without a
+# code change, and so the rule set can be reviewed as a document. Thresholds are
+# not arbitrary -- each is annotated with where it comes from, because a
+# threshold nobody can justify is a threshold nobody will trust when it fires.
+#
+# Three ideas run through this file:
+#
+#   debounce_s   A condition must hold continuously for this long before it
+#                alerts. Cloud ramps last 1-4 minutes; without debouncing, every
+#                passing cloud generates an alert and the feed becomes noise.
+#
+#   when:        Gating conditions, ANDed with the main condition. They stop a
+#                rule from firing on data that is meaningless in context -- an
+#                inverter reads 0 % efficiency at night, which is correct.
+#
+#   kind:        `staleness` rules have no metric. They fire when a subject stops
+#                publishing, which is the only way to catch a network partition:
+#                the Last Will does not fire when a device keeps its session.
+
+version: 1
+
+rules:
+  # --- per-inverter ---------------------------------------------------------
+
+  - id: heatsink_high
+    description: heatsink above the derating onset
+    scope: inverter
+    severity: warning
+    debounce_s: 90
+    metric: heatsink_temp_c
+    operator: ">"
+    threshold: 70.0
+    # Matches topology.Inverter.derate_start_c. Below this the inverter is
+    # still at full output, so alerting earlier would flag normal operation.
+
+  - id: heatsink_critical
+    description: heatsink above the derating end, output collapsing
+    scope: inverter
+    severity: critical
+    debounce_s: 60
+    metric: heatsink_temp_c
+    operator: ">"
+    threshold: 90.0
+    # Matches topology.Inverter.derate_end_c: past here output is fully derated.
+
+  - id: efficiency_low
+    description: conversion efficiency collapsed while producing
+    scope: inverter
+    severity: warning
+    debounce_s: 180
+    metric: efficiency
+    operator: "<"
+    threshold: 0.75
+    when:
+      # Gated on actually producing. At night or in standby every inverter reads
+      # a meaningless efficiency, and without this gate the farm alarms itself
+      # every dusk. 5 % of rating is comfortably above standby.
+      - {metric: ac_power_w, operator: ">", threshold: 12500.0}
+      - {metric: status_code, operator: "==", threshold: 3}
+
+  - id: power_zero_in_sunlight
+    description: reporting zero output while irradiance is high
+    scope: inverter
+    severity: critical
+    debounce_s: 60
+    metric: ac_power_w
+    operator: "<"
+    threshold: 1000.0
+    when:
+      # The failure a status code cannot express: the inverter is online, keeps
+      # publishing, reports status 3, and produces nothing. Only cross-referencing
+      # the weather station reveals it. 200 W/m2 is a firm solar-noon reading, so
+      # this cannot fire at dawn or dusk.
+      - {metric: ghi, operator: ">", threshold: 200.0}
+    # NOTE: `ghi` is not in the telemetry payload. It is injected from the site's
+    # weather station before rules are evaluated -- see alert_service.py. Keeping
+    # it out of the payload is deliberate: the wire contract in
+    # sim/src/solar_sim/metrics.py stays the single source of truth.
+
+  - id: inverter_derating
+    description: inverter reports active derating
+    scope: inverter
+    severity: warning
+    debounce_s: 60
+    metric: status_code
+    operator: "=="
+    threshold: 4.0
+
+  - id: inverter_fault
+    description: inverter reports a fault state
+    scope: inverter
+    severity: critical
+    debounce_s: 30
+    metric: status_code
+    operator: "=="
+    threshold: 5.0
+
+  - id: device_offline
+    description: inverter offline, Last Will received
+    scope: inverter
+    severity: critical
+    # Short: the Last Will is unambiguous, there is nothing to debounce.
+    debounce_s: 15
+    metric: status_code
+    operator: "=="
+    threshold: 0.0
+
+  - id: clipping_sustained
+    description: clipping at nameplate for an extended period
+    scope: inverter
+    severity: info
+    # Long. Clipping at solar noon on a clear day is normal and expected for a
+    # 1.19 MWp DC / 1.0 MWac plant; it only becomes worth reporting if it
+    # persists well past the peak.
+    debounce_s: 900
+    metric: clipping
+    operator: "=="
+    threshold: 1.0
+
+  # --- staleness ------------------------------------------------------------
+  #
+  # The rules that catch what a Last Will cannot. A network partition leaves the
+  # session alive and the status topic silent, so the only evidence of failure is
+  # the absence of messages. These are evaluated on a timer by RuleEngine.tick(),
+  # not by any incoming payload.
+
+  - id: telemetry_stale
+    description: no telemetry received from inverter
+    kind: staleness
+    scope: inverter
+    severity: critical
+    # Three missed publish intervals at the 30 s simulator cadence. Generous
+    # enough not to fire on a GC pause or a broker restart, tight enough to catch
+    # a partition within a couple of minutes.
+    stale_after_s: 120
+    forget_after_s: 3600
+
+  - id: site_rollup_stale
+    description: no site rollup received
+    kind: staleness
+    scope: site
+    severity: critical
+    stale_after_s: 180
+    forget_after_s: 3600
+
+  # --- site -----------------------------------------------------------------
+
+  - id: performance_ratio_low
+    description: performance ratio below expectation
+    scope: site
+    severity: warning
+    # Five minutes. A single cloud transient moves PR by a lot; a real
+    # underperformance (soiling, sensor drift, widespread string loss) holds.
+    debounce_s: 300
+    metric: pr_ratio
+    operator: "<"
+    threshold: 0.70
+    when:
+      # PR is meaningless at night and while clipping, when output is limited by
+      # the inverter rather than by the array.
+      - {metric: ghi, operator: ">", threshold: 200.0}
+      - {metric: clipping, operator: "<", threshold: 0.5}
+
+  - id: inverters_missing
+    description: fewer inverters reporting than the site has
+    scope: site
+    severity: critical
+    debounce_s: 60
+    metric: inverters_online
+    operator: "<"
+    threshold: 4.0

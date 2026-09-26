@@ -1,0 +1,68 @@
+apiVersion: 1
+
+# InfluxDB 3 Core datasource.
+#
+# Notes that are easy to get wrong:
+#  - Query language MUST be SQL. Flux is not supported on InfluxDB 3.x.
+#  - "Product" is InfluxDB Enterprise 3.x even for Core: the Core-specific
+#    option does not exist in the dropdown yet. This is expected behaviour.
+#  - SQL goes over Flight SQL (gRPC), which needs HTTP/2. Grafana talks
+#    directly to influxdb over the compose network, so no proxy is involved.
+#  - "Insecure Connection" is required because there is no TLS on localhost.
+#  - SQL mode uses the token; InfluxQL mode uses a username + token as password.
+
+datasources:
+  - name: InfluxDB-3
+    uid: influxdb3-solar
+    type: influxdb
+    access: proxy
+    url: https://influxdb:8181
+    # Set both forms. Grafana's API maps the top-level `database` into
+    # jsonData.database, but the InfluxQL-style fields are what the UI writes,
+    # and the Flight SQL path is sensitive to the difference.
+    database: solar
+    user: grafana
+    isDefault: true
+    editable: true
+    jsonData:
+      # Must be SQL. Flux is not supported on InfluxDB 3.x.
+      version: SQL
+      # "Enterprise 3.x" is the correct selection for a Core instance; there is
+      # no Core-specific option in the dropdown.
+      product: InfluxDB Enterprise
+      database: solar
+      httpMode: POST
+      timeout: 60
+      # TLS trust for the Flight SQL path comes from SSL_CERT_FILE (see the
+      # grafana service in docker-compose.yml). This key only affects Grafana's
+      # plain-HTTP client, which the SQL path does not use.
+      insecureSkipVerify: true
+    # Grafana provisioning expands ${VAR} from the container environment and
+    # cannot read a file. InfluxDB 3 Core 3.11 has NO permission-scoped
+    # database tokens, so this resolves to the admin token from .env. The
+    # per-component token files under secrets/ provide attribution and
+    # independent revocation, not least privilege. See docs/04-security.md.
+    secureJsonData:
+      token: ${INFLUX_ADMIN_TOKEN}
+
+# ---------------------------------------------------------------------------
+# KNOWN BLOCKER (verified, not assumed)
+# ---------------------------------------------------------------------------
+# As provisioned here, Grafana 12.2.0 and 12.4.0 both fail every query with:
+#
+#   flightsql: rpc error: code = InvalidArgument
+#   desc = no 'database' header in request
+#
+# Reproduced identically on both versions, with jsonData.database, a top-level
+# database field, jsonData.bucket, a per-query database, and every combination.
+# The transport itself is fine -- TLS and certificate trust were fixed (see
+# scripts/gen-tls-cert.sh and SSL_CERT_FILE in docker-compose.yml), and the
+# error changed from a TLS handshake failure to this application error, which
+# proves gRPC is now reaching InfluxDB.
+#
+# The InfluxDB documentation configures this datasource through the Grafana UI,
+# and the UI evidently writes something the provisioning API does not. So:
+# finish configuring this datasource once in the UI at
+# http://127.0.0.1:3000/connections/datasources/edit/influxdb3-solar
+# and the SQL path should come up. Dashboards are provisioned separately as
+# code, so only this one step is manual.

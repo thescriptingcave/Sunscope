@@ -1,0 +1,63 @@
+# Fault scenarios for the Mojave site.
+#
+# Times are `start_offset:` — relative to wherever the simulation starts. This is
+# deliberate: an absolute `start:` date means the file silently stops producing
+# faults the day after it is written, and these were absolute, so the whole
+# feature had quietly stopped working.
+#
+# `start:` with an absolute local wall-clock time is still accepted, and naive
+# values are site-local (America/Los_Angeles).
+#
+# Scenarios exist because a clean farm never triggers an alert: dashboards stay
+# empty and the detection logic is never exercised. See docs/01-design.md.
+
+scenarios:
+  # One string underperforming: the imbalance ratio should exceed 20 % while
+  # normal operation stays under 5 %.
+  #
+  # Target must be a real string id. This was STR-07, which the topology has
+  # never generated (it produces STR-11..13, 21..23, 31..33, 41..43), so the
+  # scenario silently did nothing. tests/test_scenarios.py now checks every
+  # target against the topology.
+  - name: string_underperformance
+    start_offset: "+0s"
+    duration: 45m
+    target: STR-12
+    effect:
+      scale_dc_power: 0.55
+
+  # A sensor lying about temperature and irradiance. PR falls, but this must be
+  # attributed to the sensor rather than to weather -- which is why
+  # clearness_index is published as a field.
+  - name: sensor_drift
+    start_offset: "+1h0m"
+    duration: 1h
+    target: WS-01
+    effect:
+      ghi_bias: -0.12
+      air_temp_bias_c: 8.0
+
+  # Wildfire smoke: a sustained clearness collapse. The alert must NOT fire
+  # immediately -- this is the case that tests debouncing.
+  - name: smoke_haze
+    start_offset: "+3h0m"
+    duration: 2h
+    effect:
+      sustained_kt: 0.15
+
+  # Power loss on one inverter. Detected by the Last Will within seconds.
+  - name: inverter_offline
+    start_offset: "+4h0m"
+    duration: 30m
+    target: INV-03
+    effect:
+      inverter_offline: true
+
+  # The hard case: the session stays alive, so the Last Will never fires and the
+  # device still looks healthy. Only a staleness rule catches this.
+  - name: comms_loss
+    start_offset: "+5h0m"
+    duration: 30m
+    target: INV-04
+    effect:
+      inverter_silent: true
