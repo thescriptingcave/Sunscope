@@ -35,6 +35,8 @@ logs/
 .sim.pid
 # Screenshots from scripts/browser/check-ui.js; regenerate rather than commit.
 shots/
+# Database backups from scripts/backup.py. Real data, not source.
+backups/
 
 # --- Editors / OS ---
 .DS_Store
