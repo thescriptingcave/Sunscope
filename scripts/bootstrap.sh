@@ -100,6 +100,44 @@ prepare_secrets() {
   # command line and will not start without it.
   ./scripts/gen-tls-cert.sh >/dev/null || die "gen-tls-cert.sh failed"
   ok "TLS certificate and CA bundle generated"
+
+  relax_secret_modes
+}
+
+# Make every container-readable secret actually readable by the containers.
+#
+# WHY THIS IS NEEDED
+#
+# The generator writes tokens at mode 600 and the TLS directory at 700, owned by
+# the invoking user. That is correct for a secret on the host, and it works on
+# macOS -- but only because Docker Desktop's file sharing is lenient about
+# ownership across the VM boundary. On a native Linux runner the containers run
+# as a different uid and cannot read them:
+#
+#   Failed to initialize admin token from file:
+#   Token error: Failed to read admin token file: Permission denied (os error 13)
+#
+# The containers run as uid 1500 (influxdb3) and bind mounts preserve host modes,
+# so the files have to be readable by "other" for the stack to start anywhere
+# other than this Mac.
+#
+# The trade-off is deliberate and worth stating: these files become world-
+# readable on the host. That is the standard requirement for bind-mounted
+# secrets, and acceptable here because the tokens are local development
+# credentials in a gitignored directory, not production secrets. If this ever
+# held real credentials, the answer is Docker's top-level `secrets:` with an
+# explicit mode, not a wider chmod.
+relax_secret_modes() {
+  # Directories must be traversable, or the files inside are unreachable
+  # regardless of their own mode.
+  find secrets -type d -exec chmod 755 {} + 2>/dev/null || true
+  # Files: readable by the container. Private keys included -- InfluxDB reads
+  # server.key as uid 1500 too, and it fails to start without it.
+  find secrets -type f -exec chmod 644 {} + 2>/dev/null || true
+  # .env is read by bootstrap and by the compose file substitution on the host
+  # only, never by a container, so it keeps its tighter mode.
+  [[ -f .env ]] && chmod 600 .env
+  ok "secret modes relaxed so the containers can read them"
 }
 
 build_web() {
