@@ -8,7 +8,7 @@ SHELL := /bin/bash
 BOOTSTRAP := ./scripts/bootstrap.sh
 
 .DEFAULT_GOAL := help
-.PHONY: help up down reset status test sim-start sim-stop logs
+.PHONY: help up down reset status disk test sim-start sim-stop logs
 
 help: ## show this help
 	@$(BOOTSTRAP) help
@@ -24,6 +24,9 @@ reset: ## destroy the database, secrets and TLS material
 
 status: ## what is running, and where
 	@$(BOOTSTRAP) status
+
+disk: ## storage used and the projected growth rate
+	@$(BOOTSTRAP) disk
 
 test: ## every test suite and verification script
 	@$(BOOTSTRAP) test

@@ -90,7 +90,8 @@ renders the same data in the terminal — see [Watch it live](#watch-it-live-in-
 |---|---|
 | `./scripts/bootstrap.sh up` | Bring everything up. Idempotent — safe to re-run |
 | `./scripts/bootstrap.sh status` | What is running, and every endpoint |
-| `./scripts/bootstrap.sh test` | All test suites plus four verification scripts |
+| `./scripts/bootstrap.sh disk` | Storage used and the projected growth rate |
+| `./scripts/bootstrap.sh test` | All test suites, six verification steps, both browser checks, and a backup round-trip |
 | `./scripts/bootstrap.sh sim:stop` | Stop the simulator (the stack keeps running) |
 | `./scripts/bootstrap.sh down` | Stop everything, keep the database |
 | `./scripts/bootstrap.sh reset` | Destroy the database, secrets and TLS material |
@@ -447,4 +448,5 @@ Non-obvious behaviours, all verified by running them. Full list in
 | 5 | [Testing](./docs/05-testing.md) | Test strategy, pyramid, contract tests, SQL regression |
 | 6 | [SQL Examples](./docs/06-sql-examples.md) | Beginner → Expert InfluxDB SQL, all 35 executed against the live database. Runnable copies in [docs/sql/](./docs/sql/) |
 | 7 | [Alerting](./docs/07-alerting.md) | Rules, debounce and hysteresis, the staleness check |
+| 8 | [Retention](./docs/10-retention.md) | Why InfluxDB 3 Core cannot prune, and the only reclaim path that works |
 | — | [Grafana notes](./docs/grafana-influxdb-notes.md) | Flight SQL, TLS trust, the `database` header, and writing panels |

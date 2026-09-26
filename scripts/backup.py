@@ -302,11 +302,38 @@ def from_csv(text: str) -> list[dict]:
 # --- backup ------------------------------------------------------------------
 
 
-def do_backup(target_root: Path, keep: int, max_age_days: int, database: str | None = None) -> int:
+def do_backup(
+    target_root: Path,
+    keep: int,
+    max_age_days: int,
+    database: str | None = None,
+    only: list[str] | None = None,
+    since: str | None = None,
+) -> int:
     influx = connect(database)
     tables = influx.tables()
     if not tables:
         raise BackupError(f"no tables in {influx.database}; is the stack up?")
+
+    # Table selection exists because a table cannot be deleted once created in
+    # InfluxDB 3 Core -- the name tombstones and the next write recreates it
+    # under a timestamped suffix. So a restore cannot be "cleaned up" afterwards;
+    # anything unwanted must be excluded before it is written in the first place.
+    if only:
+        wanted = {t.strip() for t in only if t.strip()}
+        missing = wanted - set(tables)
+        if missing:
+            raise BackupError(
+                f"requested table(s) not present: {', '.join(sorted(missing))}"
+            )
+        tables = [t for t in tables if t in wanted]
+
+    # A time filter is what turns this into a usable retention primitive: back up
+    # only the window worth keeping, rebuild the volume, restore that window.
+    if since:
+        # Validate here rather than letting the server reject it per table, which
+        # would report the same bad bound five times.
+        _to_nanoseconds(since)
 
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     target = target_root / stamp
@@ -333,10 +360,15 @@ def do_backup(target_root: Path, keep: int, max_age_days: int, database: str | N
         "schema": schema,
         "tables": {},
     }
+    if since:
+        # Without this a restore cannot tell a deliberately windowed backup from
+        # one that simply happened to contain little data.
+        manifest["since"] = since  # type: ignore[index]
     failures: list[str] = []
     for table in tables:
         try:
-            rows = influx.query(f'SELECT * FROM "{table}"')
+            where = f' WHERE time >= \'{since}\'' if since else ""
+            rows = influx.query(f'SELECT * FROM "{table}"{where}')
         except (urllib.error.URLError, OSError) as exc:
             failures.append(f"{table}: {exc}")
             print(f"    {table:<22} FAILED  {exc}")
@@ -527,6 +559,18 @@ def main() -> int:
     parser.add_argument("--database", help="override the target database")
     parser.add_argument("--create-database", action="store_true",
                         help="create the target database if it does not exist")
+    parser.add_argument(
+        "--only",
+        help="comma-separated tables to include; default is every table. Needed "
+             "because a table cannot be removed after it is created -- see "
+             "docs/10-retention.md",
+    )
+    parser.add_argument(
+        "--since",
+        help="only rows at or after this RFC 3339 timestamp, e.g. "
+             "2026-09-25T00:00:00Z. This is the retention primitive: back up the "
+             "window worth keeping, rebuild the volume, restore that window.",
+    )
     parser.add_argument("--keep", type=int, default=KEEP)
     parser.add_argument("--max-age-days", type=int, default=MAX_AGE_DAYS)
     parser.add_argument("--force", action="store_true",
@@ -563,7 +607,14 @@ def main() -> int:
             return do_restore(Path(args.restore), args.force, args.database)
         if args.list:
             return do_list(target_root)
-        return do_backup(target_root, args.keep, args.max_age_days, args.database)
+        return do_backup(
+            target_root,
+            args.keep,
+            args.max_age_days,
+            args.database,
+            only=args.only.split(",") if args.only else None,
+            since=args.since,
+        )
     except BackupError as exc:
         print(f"\nerror: {exc}", file=sys.stderr)
         return 1

@@ -361,6 +361,109 @@ backup_roundtrip() {
   trap - EXIT
 }
 
+influx_token() {
+  [[ -f secrets/admin-token ]] || return 1
+  python3 -c 'import json;print(json.load(open("secrets/admin-token"))["token"])' 2>/dev/null
+}
+
+# Returns the single data row of an aggregate query, with the header and the
+# ASCII border discarded. Trimming here rather than at each call site is what
+# keeps the callers correct: awk over the full output yields the column name on
+# line one and the value on line two, so a caller that forgets `tail -1` gets a
+# two-line string that fails a numeric test and silently reads as zero.
+#
+# Single-row only. A query returning several rows would be truncated.
+query_influx() {
+  docker compose exec -T influxdb influxdb3 query "$1" \
+    --host https://localhost:8181 --tls-no-verify \
+    --database "${INFLUX_DB:-solar}" --token "$(influx_token)" 2>/dev/null \
+    | grep '^|' | tail -1
+}
+
+# --- disk usage and growth ----------------------------------------------------
+#
+# Reported rather than acted on, because InfluxDB 3 Core cannot delete rows and
+# never reclaims disk (see docs/10-retention.md). The point of this command is
+# that the "1.29 GB/year" figure in the docs stays a measured number rather than
+# becoming folklore, and that nobody rediscovers the no-delete constraint by
+# hitting it.
+#
+# Bytes come from system.parquet_files, which is the same accounting InfluxDB
+# uses internally, rather than du on the volume: du includes the WAL, caches and
+# metadata, which are fixed overhead and make real growth look worse than it is.
+show_disk() {
+  step "Disk usage"
+
+  local volume rows bytes age
+  volume="$(docker volume ls -q | grep -m1 'influx' || true)"
+  if [[ -z "$volume" ]]; then
+    warn "no influxdb volume found"
+    return 0
+  fi
+  info "volume: $volume"
+
+  local on_disk
+  on_disk="$(docker compose exec -T influxdb sh -c 'du -sm /var/lib/influxdb3 2>/dev/null | cut -f1' 2>/dev/null | tr -d ' ')"
+  [[ -n "$on_disk" ]] && info "on disk (incl. WAL/caches): ${on_disk} MB"
+
+  # Row counts come from the tables themselves, not from system.parquet_files.
+  # Parquet accounting lags badly on a fresh volume -- freshly written data sits
+  # in the object store until a compaction pass, which can be many minutes, so
+  # reading rows from there reports zero on a database that plainly has data.
+  local counted=0 t n
+  for t in inverter_telemetry string_telemetry site_rollup weather_station events; do
+    n="$(query_influx "SELECT COUNT(*) AS n FROM $t" | awk -F'|' '{gsub(/ /,"",$2);print $2}')"
+    [[ "$n" =~ ^[0-9]+$ ]] && counted=$((counted + n))
+  done
+  info "telemetry: ${counted} rows"
+
+  # Bytes: prefer InfluxDB's own parquet accounting, which counts only data.
+  #
+  # When that is unavailable -- a fresh volume can go a long time before the
+  # first compaction -- du on the volume is a poor substitute for a per-row
+  # figure: it includes the WAL, caches and metadata, and dividing that overhead
+  # across the row count understates bytes-per-row rather than overstating it.
+  # So the fallback does not silently produce a number. It uses the rate measured
+  # in docs/10-retention.md and says so.
+  local measured_bpr=358
+  if [[ "${bytes:-0}" -gt 0 ]]; then
+    info "on disk: $(awk -v b="$bytes" 'BEGIN{printf "%.2f", b/1e6}') MB of Parquet data"
+  else
+    warn "system.parquet_files is empty: nothing has been compacted on this volume yet,"
+    warn "so a real byte count is not available. Using the measured rate instead."
+    bytes=$(( counted * measured_bpr ))
+  fi
+
+  # Growth needs a time span, so take it from the data rather than assuming the
+  # container start time -- the volume outlives any single run.
+  local age
+  age="$(query_influx 'SELECT (EXTRACT(EPOCH FROM (MAX(time) - MIN(time))) / 3600.0) AS h FROM inverter_telemetry' \
+    | awk -F'|' '{gsub(/ /,"",$2);print $2}')"
+
+  if awk -v h="${age:-0}" 'BEGIN{exit !(h > 0.5)}' && [[ "$counted" -gt 0 ]]; then
+    local per_year hours
+    per_year="$(awk -v r="$counted" -v b="$bytes" -v h="$age" \
+      'BEGIN{printf "%.0f", (r/h)*24*365*b/r/1e6}')"
+    hours="$(awk -v h="$age" 'BEGIN{printf "%.1f", h}')"
+    info "over ${hours} h of data => ~${per_year} MB/year"
+    # Framed over ten years rather than "years to fill 1 GB": at ~1.3 GB/year a
+    # 1 GB threshold reads as alarming when it is not a constraint at all, and a
+    # ten-year horizon is the scale anyone actually cares about for capacity.
+    awk -v yr="$per_year" -v mb="${on_disk:-0}" 'BEGIN{
+      printf "    %d MB used => about %.1f GB over 10 years\n", mb, yr*10/1024
+    }'
+    if [[ "$per_year" -lt 10000 ]]; then
+      echo "    not a concern for this workload; see docs/10-retention.md"
+    fi
+  else
+    info "not enough data yet to project a growth rate"
+  fi
+
+  echo
+  warn "InfluxDB 3 Core cannot DELETE rows and never reclaims disk."
+  warn "Reclaiming means rebuilding the volume -- see docs/10-retention.md"
+}
+
 usage() {
   cat <<'USAGE'
 solar farm simulator — bootstrap
@@ -369,6 +472,7 @@ solar farm simulator — bootstrap
   down       stop the containers and the simulator, keep all data
   reset      destroy everything including the database and secrets
   status     show what is running, and the endpoints
+  disk       storage used and the projected growth rate
   test       run every test suite and verification script
   sim:start  start the simulator on the host
   sim:stop   stop the simulator
@@ -425,6 +529,7 @@ case "${1:-up}" in
   down)       cmd_down ;;
   reset)      cmd_reset ;;
   status)     show_status ;;
+  disk)       show_disk ;;
   test)       run_tests ;;
   sim:start)  start_simulator ;;
   sim:stop)   stop_simulator ;;
