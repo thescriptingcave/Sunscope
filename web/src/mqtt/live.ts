@@ -13,50 +13,34 @@
  * (see docs/04-security.md). This module is the seam where that swap happens.
  */
 
-import type { MqttClient } from 'mqtt'
-
 /**
- * mqtt.js is loaded dynamically.
+ * Live telemetry, relayed from the API's own MQTT subscription.
  *
- * It is the bulk of the bundle (~150 kB gzipped) and it is not needed to paint
- * the first screen: the cold-load state comes from the API's Last Value Cache,
- * and the live feed connects a moment later. Splitting it keeps the critical
- * path small on a phone, which is the whole point of shipping this as a PWA.
+ * WHY THIS IS NOT A BROWSER -> BROKER CONNECTION
  *
- * The interop shape must be handled at runtime, not only in types. Vite bundles
- * mqtt.js to a chunk exporting **only** `default`, so `mod.connect` is
- * undefined in the browser even though TypeScript's `typeof import('mqtt')`
- * declares a named `connect`. Reading `.connect` off the namespace type-checks
- * cleanly and then throws `mqttModule.connect is not a function` at runtime,
- * leaving the dashboard on a permanent "Connecting" banner with every tile
- * zeroed. Type checking could never have caught this -- only loading the page
- * in a real browser did.
+ * The dashboard used to open its own WebSocket straight to EMQX. That works on
+ * http://localhost, because a browser treats localhost as a secure context. The
+ * moment the page is served over https the browser blocks the ws:// connection
+ * as mixed content, and there is no way around it from the client: not wss://,
+ * because that would mean putting a TLS terminator in front of the broker, and
+ * not a rewrite, because the block happens before anything is sent.
+ *
+ * So the browser no longer talks to the broker at all. It opens a same-origin
+ * socket to the API, which already holds an MQTT subscription for the alert
+ * engine, and relays. That removes the mixed-content problem outright, keeps the
+ * broker unexposed, and costs one extra hop on the path that must feel instant.
+ *
+ * The socket is authenticated with a single-use ticket rather than the JWT: a
+ * browser cannot set an Authorization header on a WebSocket handshake, and
+ * putting the long-lived token in a query string would leak it into access logs,
+ * proxy logs and history.
+ *
+ * Frames are `{type, payload}` with type one of hello | reading | status |
+ * rollup | weather. The payload is the raw telemetry object, unchanged from the
+ * MQTT wire format, so this path stays a thin contract.
  */
-type MqttModule = {
-  default?: { connect: typeof import('mqtt').connect }
-  connect?: typeof import('mqtt').connect
-}
 
-function connectFactory(mod: MqttModule): typeof import('mqtt').connect {
-  const factory = mod.default?.connect ?? mod.connect
-  if (typeof factory !== 'function') {
-    throw new Error('mqtt module exposes no connect() — the bundler changed its export shape')
-  }
-  return factory
-}
-
-/** EMQX WebSocket listener, per docker-compose.yml (MQTT_WS_PORT). */
-const WS_URL = (() => {
-  if (import.meta.env.VITE_MQTT_WS) return import.meta.env.VITE_MQTT_WS as string
-  const { protocol, hostname } = window.location
-  // The dev server runs on :5173 while EMQX is on :8083, so the host is right
-  // but the port is not. In production the app is same-origin with the API, and
-  // 8083 is still the broker's port, so default to it either way.
-  const scheme = protocol === 'https:' ? 'wss' : 'ws'
-  return `${scheme}://${hostname}:8083/mqtt`
-})()
-
-const SITE = 'mojave'
+import { api } from '../api/client'
 
 export interface LiveReading {
   inverterId: string
@@ -99,12 +83,21 @@ interface Payload {
   strings_online?: number
 }
 
+interface Frame {
+  type: 'hello' | 'reading' | 'status' | 'rollup' | 'weather'
+  payload?: Payload
+  subject?: string
+  engine_connected?: boolean
+}
+
 export class LiveFeed {
-  private client: MqttClient | null = null
+  private socket: WebSocket | null = null
   private state: ConnectionState = 'offline'
   private readonly readings = new Map<string, LiveReading>()
   private rollup: Rollup | null = null
   private readonly listeners = new Set<() => void>()
+  private retryDelay = 1000
+  private stopped = false
 
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener)
@@ -123,63 +116,79 @@ export class LiveFeed {
     return { readings: [...this.readings.values()], rollup: this.rollup, at: Date.now() }
   }
 
-  private factory: typeof import('mqtt').connect | null = null
-
+  /**
+   * Open the relay.
+   *
+   * Each attempt mints a fresh ticket, because the previous one was consumed the
+   * instant its socket opened. Retrying with a spent ticket would fail
+   * identically every time, which reads as "the server is down" rather than
+   * "the credential expired".
+   */
   async connect(): Promise<void> {
-    if (this.client) return
+    if (this.socket || this.stopped) return
     this.setState('connecting')
 
-    if (!this.factory) {
+    let ticket: string
+    try {
+      ticket = (await api.liveTicket()).ticket
+    } catch (err) {
+      // Degraded but not fatal: cached state and history still render. It must
+      // say so rather than looking like a quiet, healthy dashboard.
+      console.error('could not obtain a live-feed ticket:', err)
+      this.setState('offline')
+      this.scheduleReconnect()
+      return
+    }
+
+    const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
+    const url = `${scheme}://${window.location.host}/api/live?ticket=${encodeURIComponent(ticket)}`
+
+    let socket: WebSocket
+    try {
+      socket = new WebSocket(url)
+    } catch (err) {
+      console.error('could not open the live socket:', err)
+      this.setState('offline')
+      this.scheduleReconnect()
+      return
+    }
+    this.socket = socket
+
+    socket.onopen = () => {
+      this.retryDelay = 1000
+      this.setState('connected')
+    }
+    socket.onmessage = (event) => {
+      let frame: Frame
       try {
-        this.factory = connectFactory(await import('mqtt'))
-      } catch (err) {
-        // Without the broker client the app still works, showing cached state
-        // and history. It is a degraded mode, not a fatal error -- but it must
-        // say so rather than looking like a quiet, healthy dashboard.
-        console.error('MQTT live feed unavailable:', err)
+        frame = JSON.parse(String(event.data)) as Frame
+      } catch {
+        return // a malformed frame is not worth tearing the feed down for
+      }
+      if (frame.type === 'reading' || frame.type === 'rollup' || frame.type === 'status') {
+        if (frame.payload) this.apply(frame.payload)
+      }
+    }
+    socket.onerror = () => this.setState('reconnecting')
+    socket.onclose = () => {
+      if (this.socket === socket) this.socket = null
+      if (this.stopped) {
         this.setState('offline')
         return
       }
+      this.setState('reconnecting')
+      this.scheduleReconnect()
     }
+  }
 
-    this.client = this.factory(WS_URL, {
-      // The broker has no authentication in the local dev stack; see
-      // docs/04-security.md. It is bound to loopback for exactly this reason.
-      reconnectPeriod: 2000,
-      connectTimeout: 8000,
-      clean: true,
-    })
-
-    this.client.on('connect', () => {
-      this.setState('connected')
-      this.client?.subscribe(
-        [
-          `solar/${SITE}/block/+/inverter/+/telemetry`,
-          `solar/${SITE}/rollup`,
-          `solar/${SITE}/block/+/inverter/+/status`,
-        ],
-        { qos: 0 },
-      )
-    })
-
-    this.client.on('reconnect', () => this.setState('reconnecting'))
-    this.client.on('offline', () => this.setState('reconnecting'))
-    this.client.on('close', () => {
-      // A closed socket is only a problem if we never reconnect; flag it so the
-      // UI can distinguish "quiet" from "broken".
-      if (this.state !== 'offline') this.setState('reconnecting')
-    })
-    this.client.on('error', () => this.setState('reconnecting'))
-
-    this.client.on('message', (_topic, raw) => {
-      let payload: Payload
-      try {
-        payload = JSON.parse(raw.toString()) as Payload
-      } catch {
-        return // a malformed message is not worth tearing the feed down for
-      }
-      this.apply(payload)
-    })
+  /** Exponential backoff, capped, so a restarting API is not hammered. */
+  private scheduleReconnect(): void {
+    if (this.stopped) return
+    const delay = this.retryDelay
+    this.retryDelay = Math.min(this.retryDelay * 2, 15000)
+    window.setTimeout(() => {
+      if (!this.stopped) void this.connect()
+    }, delay)
   }
 
   private apply(payload: Payload): void {
@@ -217,9 +226,18 @@ export class LiveFeed {
     this.emit()
   }
 
+  /**
+   * Close the socket for good.
+   *
+   * `stopped` is what distinguishes a deliberate shutdown from a drop: without
+   * it `onclose` would treat this as a network failure and immediately schedule
+   * a reconnect.
+   */
   disconnect(): void {
-    this.client?.end(true)
-    this.client = null
+    this.stopped = true
+    const socket = this.socket
+    this.socket = null
+    socket?.close()
     this.setState('offline')
   }
 }

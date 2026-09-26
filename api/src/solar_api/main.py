@@ -29,6 +29,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from fastapi.websockets import WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from . import sql as sqlmod
@@ -44,6 +45,7 @@ from .auth import (
 )
 from .config import PWA_DIST, Settings, get_settings
 from .influx import InfluxClient, InfluxError
+from .live_tickets import TICKET_TTL_S, TicketStore
 
 log = logging.getLogger("solar_api")
 
@@ -95,6 +97,10 @@ def _is_local_address(host: str | None) -> bool:
     if ip.is_loopback or ip.is_link_local:
         return True
     return any(ip in network for network in _LOCAL_NETWORKS)
+
+
+def _tickets(request: Request) -> TicketStore:
+    return request.app.state.tickets
 
 
 def _alerts(request: Request) -> AlertService:
@@ -210,6 +216,9 @@ def create_app() -> FastAPI:
         description="Read-only API over the solar farm telemetry in InfluxDB 3.",
         lifespan=lifespan,
     )
+    # Per-app rather than module-global, so tests that build their own app get
+    # their own tickets and cannot accept one another's.
+    app.state.tickets = TicketStore()
 
     app.add_middleware(
         CORSMiddleware,
@@ -580,6 +589,72 @@ def create_app() -> FastAPI:
         checked = sqlmod.build_read_only_sql(sql)
         rows = await client.query(checked, bindings or None)
         return {"sql": checked, "count": len(rows), "rows": rows}
+
+    @app.post("/api/live-ticket", tags=["telemetry"])
+    async def live_ticket(
+        subject: str = Depends(require_auth),
+        service: AlertService = Depends(_alerts),
+        tickets: TicketStore = Depends(_tickets),
+    ) -> dict[str, Any]:
+        """Mint a single-use ticket for `GET /api/live`.
+
+        A browser cannot send an Authorization header on a WebSocket handshake.
+        Putting the JWT in the query string is the usual workaround and it leaks
+        the credential into access logs, proxy logs and history. This hands out a
+        30-second, one-shot token instead, so the long-lived credential never
+        leaves a header.
+        """
+        return {
+            "ticket": tickets.issue(subject),
+            "expires_in": int(TICKET_TTL_S),
+            "path": "/api/live",
+            "stream": service.connected,
+        }
+
+    @app.websocket("/api/live")
+    async def live_socket(websocket: WebSocket) -> None:
+        """Relay MQTT to the browser, so the PWA never opens a broker socket.
+
+        This is the fix for the HTTPS cliff. Serving the page over https means
+        the browser blocks the `ws://` connection the PWA used to make directly
+        to EMQX as mixed content, and the only alternatives were exposing the
+        broker publicly or putting a TLS terminator in front of it. Relaying
+        here means the browser only ever talks to its own origin.
+
+        The frames are the raw telemetry payloads with a `type` discriminator,
+        which is a thinner contract than the REST API on purpose: this path
+        exists to be fast, and the payload is already the documented shape.
+        """
+        tickets: TicketStore = websocket.app.state.tickets
+        token = websocket.query_params.get("ticket", "")
+        who = tickets.consume(token)
+        if who is None:
+            # 1008 is "policy violation": the socket was never authorised.
+            await websocket.close(code=1008, reason="invalid or expired ticket")
+            return
+
+        service: AlertService | None = getattr(websocket.app.state, "alerts", None)
+        if service is None:
+            await websocket.close(code=1011, reason="alert engine not running")
+            return
+
+        queue = service.subscribe()
+        await websocket.accept()
+        try:
+            await websocket.send_json({
+                "type": "hello",
+                "subject": who,
+                "engine_connected": service.connected,
+            })
+            while True:
+                frame = await queue.get()
+                await websocket.send_json(frame)
+        except WebSocketDisconnect:
+            pass
+        except Exception:  # noqa: BLE001
+            log.info("live socket for %s ended: %s", who, log.exception.__name__, exc_info=True)
+        finally:
+            service.unsubscribe(queue)
 
     @app.get("/api/meta", tags=["telemetry"])
     async def meta(_: str = Depends(require_auth)) -> dict[str, Any]:

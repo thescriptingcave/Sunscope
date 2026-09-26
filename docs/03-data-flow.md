@@ -388,7 +388,7 @@ genuinely lossy hop — see [Architecture §6](./02-architecture.md#6-failure-mo
 | 4a | Telegraf | Parse, buffer, batch | immediate |
 | 4b | Telegraf | Flush batch to InfluxDB | ≤ 10 s |
 | 5 | InfluxDB | Write to WAL, later compact to Parquet | < 100 ms |
-| 6a | PWA | Receive over WebSocket, update tile | **< 1 s** |
+| 6a | PWA | Receive relayed frames over the same-origin WebSocket, update tile | **< 1 s** |
 | 6b | PWA | User opens history → FastAPI → SQL | 100 ms – s |
 
 **Live latency to the PWA is under a second** and is bounded only by the publish interval and
@@ -396,15 +396,26 @@ the WebSocket hop. The 10 s Telegraf flush is deliberately *not* on the live pat
 
 ### 5.2 Cold PWA load
 
-1. Connect to `ws://localhost:8083/mqtt`
-2. Subscribe to `solar/+/+/status` and `solar/+/rollup` — **retained**, so current state arrives
-   immediately, no waiting for the next publish
-3. Subscribe to telemetry topics for live updates
+1. `POST /api/live-ticket` (with the JWT) → a 30-second, single-use ticket
+2. Open `GET /api/live?ticket=…` — a **same-origin** WebSocket to the API
+3. The API relays frames it already receives on its own MQTT subscription: `reading`, `status`,
+   `rollup`, `weather`
 4. In parallel, call `GET /api/now` → FastAPI → `SELECT * FROM last_cache(...)` for the full
    device inventory
 5. Call `GET /api/series?…` for the history charts
 
 Step 2 gives a populated screen in well under a second. Steps 4–5 fill in behind it.
+
+**The browser does not talk to the broker.** It used to: a direct `ws://localhost:8083/mqtt`
+connection is faster and works fine on loopback, but the moment the page is served over HTTPS the
+browser blocks it as mixed content, before anything is sent and with no client-side workaround.
+The API already held an MQTT connection for the alert engine, so relaying costs one extra hop on
+the same-origin path and removes the largest exposure in the stack. See
+[Security §6](./04-security.md).
+
+The ticket exists because a WebSocket handshake cannot carry an `Authorization` header, and the
+usual workaround — a JWT in the query string — leaks an hours-long credential into access
+logs, proxy logs and browser history.
 
 ### 5.3 Inverter power loss
 

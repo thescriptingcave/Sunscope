@@ -245,6 +245,20 @@ export const api = {
 
   meta: () => request<Meta>('/meta'),
 
+  /**
+   * Single-use ticket for the live WebSocket.
+   *
+   * The JWT cannot go in the query string: a WebSocket handshake carries no
+   * Authorization header, and a token in a URL ends up in access logs, proxy
+   * logs and browser history. This hands back a 30-second, one-shot token
+   * instead, so the long-lived credential never leaves a header.
+   */
+  liveTicket: () =>
+    request<{ ticket: string; expires_in: number; path: string; stream: boolean }>(
+      '/live-ticket',
+      { method: 'POST' },
+    ),
+
   /** Live alerts held in the engine's memory. */
   alerts: (severity?: string[]) => {
     const q = new URLSearchParams()

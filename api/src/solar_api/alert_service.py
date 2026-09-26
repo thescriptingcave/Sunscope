@@ -68,9 +68,57 @@ class AlertService:
         # Bounded so a slow or unreachable database cannot grow the backlog
         # without limit. 256 is far more than a real alert rate.
         self._writes: asyncio.Queue[Alert] = asyncio.Queue(maxsize=256)
+        #: Connected browsers, for the server-side live feed. See `subscribe`.
+        self._listeners: set[asyncio.Queue[dict[str, Any]]] = set()
         self._counters = {
             "received": 0, "alerts_fired": 0, "resolutions": 0, "errors": 0, "dropped": 0,
         }
+
+    # -- live fan-out -------------------------------------------------------
+
+    def subscribe(self, maxsize: int = 64) -> asyncio.Queue[dict[str, Any]]:
+        """Register a listener and return its queue.
+
+        This is what makes the PWA work over HTTPS. The browser used to open its
+        own WebSocket straight to the broker, which a browser blocks as mixed
+        content the moment the page is served over https -- and the only ways
+        around that were to expose EMQX publicly or to put a TLS terminator in
+        front of it. Relaying through the API removes the browser's need to reach
+        the broker at all.
+
+        Reusing this one MQTT connection rather than opening a second per browser
+        is deliberate: the broker sees one subscriber regardless of how many
+        dashboards are open, and there is a single parse of each message.
+        """
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=maxsize)
+        self._listeners.add(queue)
+        return queue
+
+    def unsubscribe(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
+        self._listeners.discard(queue)
+
+    @property
+    def listener_count(self) -> int:
+        return len(self._listeners)
+
+    def _broadcast(self, frame: dict[str, Any]) -> None:
+        """Fan one parsed message out to every connected browser.
+
+        A browser that cannot keep up is dropped rather than allowed to block
+        the MQTT loop: a slow client must not be able to stall rule evaluation.
+        Dropping the oldest entry is right here, because the newest reading is
+        the one the dashboard is waiting to draw.
+        """
+        for queue in list(self._listeners):
+            try:
+                queue.put_nowait(frame)
+            except asyncio.QueueFull:
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    queue.get_nowait()
+                with contextlib.suppress(asyncio.QueueFull):
+                    queue.put_nowait(frame)
+                self._counters["dropped"] += 1
+
 
     # -- state ---------------------------------------------------------------
 
@@ -184,19 +232,26 @@ class AlertService:
             self._counters["received"] += 1
             identity, kind = parts[5], parts[6]
             if kind == "telemetry":
-                self._dispatch(identity, "inverter", self._with_ghi(data))
+                enriched = self._with_ghi(data)
+                self._dispatch(identity, "inverter", enriched)
+                self._broadcast({"type": "reading", "payload": enriched})
             elif kind == "status":
                 # LWT/status messages carry only the state; a rule reading
                 # status_code must still see a fresh value on this path.
-                self._dispatch(identity, "inverter", {"status_code": data.get("status_code")})
+                frame = {"status_code": data.get("status_code")}
+                self._dispatch(identity, "inverter", frame)
+                self._broadcast({"type": "status", "subject": identity, "payload": frame})
         # solar/{site}/rollup
         elif len(parts) == 3 and parts[1] == SITE and parts[2] == "rollup":
             self._counters["received"] += 1
-            self._dispatch(SITE, "site", self._with_ghi(data))
+            enriched = self._with_ghi(data)
+            self._dispatch(SITE, "site", enriched)
+            self._broadcast({"type": "rollup", "payload": enriched})
         # solar/{site}/weather/{station}/telemetry
         elif len(parts) == 5 and parts[1] == SITE and parts[2] == "weather":
             self._counters["received"] += 1
             self._weather[parts[3]] = dict(data)
+            self._broadcast({"type": "weather", "payload": dict(data)})
         # Anything else is another site's traffic or a topic shape this version
         # does not understand; counting it as received would overstate coverage.
 

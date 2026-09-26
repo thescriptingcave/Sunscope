@@ -306,15 +306,33 @@ FastAPI (server-side only) ──▶ EMQX :8083           (MQTT over WS)
 FastAPI (server-side only) ──▶ InfluxDB :8181
 ```
 
-**This requires changing the PWA's live-data path.** §5.2 of the Architecture doc has the PWA
-connecting directly to EMQX over WebSocket, which is the right design on localhost and the wrong
-one on the internet. When tunnelling, the backend must proxy or fan out the MQTT stream instead,
-and the broker must never be directly reachable.
+**The PWA's live-data path has been changed for exactly this reason.** The browser used to open
+its own WebSocket straight to EMQX. That is the right design on localhost and the wrong one
+anywhere else: served over HTTPS the browser blocks the `ws://` connection as mixed content
+before a byte is sent, and there is no client-side workaround — `wss://` would mean putting a
+TLS terminator in front of the broker.
+
+The live stream is now fanned out server-side. The API already held an MQTT subscription for the
+alert engine, so it relays those messages to browsers over a same-origin socket at
+`GET /api/live`. Consequences:
+
+- The browser only ever contacts its own origin, so there is no mixed content and no cross-origin
+  WebSocket to justify.
+- The broker needs no TLS certificate and no public reachability, which removes the single largest
+  exposure in this stack.
+- One broker connection serves every open dashboard, and each message is parsed once.
+
+The socket is authenticated with a **single-use ticket**, not the JWT. A WebSocket handshake
+carries no `Authorization` header, and the usual workaround — a token in the query string — puts
+an hours-long credential into access logs, proxy logs and browser history. `POST /api/live-ticket`
+mints a 30-second, one-shot token instead; see `live_tickets.py`.
+
+This also removed `mqtt.js` from the frontend entirely: the browser no longer speaks MQTT.
 
 Minimum before tunnelling:
 
 1. Enable EMQX authentication **and** ACLs (§4.2) — non-negotiable
-2. Proxy only `:8000` and the static assets
+2. Proxy only `:8000` and the static assets — `:8000` now carries the live feed too
 3. Serve the PWA over HTTPS with HSTS
 4. Keep `1883`, `8083`, `8181`, `18083`, `3000` on `127.0.0.1`
 5. Rate limit the login endpoint
