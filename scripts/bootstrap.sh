@@ -128,16 +128,34 @@ prepare_secrets() {
 # held real credentials, the answer is Docker's top-level `secrets:` with an
 # explicit mode, not a wider chmod.
 relax_secret_modes() {
-  # Directories must be traversable, or the files inside are unreachable
-  # regardless of their own mode.
+  # Two separate needs, and conflating them is how you end up with a 777 secrets
+  # directory and no idea which part wanted it.
+  #
+  # READ: every container that mounts ./secrets runs as uid 1500, and bind mounts
+  # preserve host modes, so directories must be traversable and files readable.
+  # InfluxDB will not start without admin-token, and it warns (harmlessly) that
+  # 644 is looser than it would like.
   find secrets -type d -exec chmod 755 {} + 2>/dev/null || true
-  # Files: readable by the container. Private keys included -- InfluxDB reads
-  # server.key as uid 1500 too, and it fails to start without it.
   find secrets -type f -exec chmod 644 {} + 2>/dev/null || true
-  # .env is read by bootstrap and by the compose file substitution on the host
+
+  # WRITE: influx-init mints the per-component tokens and writes them back into
+  # this same directory. It truncates the existing *.token files, and when a
+  # token is regenerated under a fresh timestamped name it creates a new file
+  # outright -- so it needs write access to the files AND to the directory.
+  #
+  # Scoped to secrets/ and *.token only. secrets/tls/ is written by
+  # gen-tls-cert.sh on the host and never by a container, so it stays 755.
+  chmod 777 secrets 2>/dev/null || true
+  find secrets -maxdepth 1 -name "*.token" -exec chmod 666 {} + 2>/dev/null || true
+
+  # A file the init container creates is owned by uid 1500, and the host user
+  # cannot chmod it. That is fine: only the container rewrites those, and only
+  # the host ever reads them.
+
+  # .env is read by bootstrap and by compose's variable substitution on the host
   # only, never by a container, so it keeps its tighter mode.
   [[ -f .env ]] && chmod 600 .env
-  ok "secret modes relaxed so the containers can read them"
+  ok "secret modes set so the containers can read, and init can write, them"
 }
 
 build_web() {

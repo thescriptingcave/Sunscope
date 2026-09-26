@@ -73,12 +73,18 @@ jobs:
 
       - name: Unit tests (no services required)
         run: |
-          uv run --project sim pytest -q
+          # `cd` into each project. Two reasons, both learned the hard way:
+          #   - --project selects the uv environment but does not change the
+          #     working directory, so pytest run from the root collects BOTH
+          #     sim/tests and api/tests and fails to import solar_sim;
+          #   - [tool.pytest.ini_options] lives in each pyproject.toml, so from
+          #     the root pytest never sees testpaths or pythonpath.
+          ( cd sim && uv run pytest -q )
           # test_live.py talks to a real InfluxDB and has no skip guard, so it
           # would fail here rather than skip; it runs in the integration job.
           # test_pwa.py self-skips without a bundle, and the build step above
           # produced one, so it runs in both.
-          uv run --project api pytest -q --ignore=tests/test_live.py
+          ( cd api && uv run pytest -q --ignore=tests/test_live.py )
 
   integration:
     name: full stack, verification scripts, browser check
@@ -125,7 +131,7 @@ jobs:
           tail -5 sim.log
 
       - name: API test suite (including live-dialect tests)
-        run: uv run --project api pytest -q
+        run: ( cd api && uv run pytest -q )
 
       - name: Verification scripts
         run: |
