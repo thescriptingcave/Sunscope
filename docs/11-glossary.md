@@ -210,3 +210,4 @@ Things that look like bugs and are not — or are, and fail quietly.
 | Capacity factor rising slowly at 06:00 | Correct. It is progress toward the day's potential, not a rate. |
 | `403` on `/api/explore` over loopback | Docker rewrites the source address, so the API sees the bridge gateway (`172.22.0.1`), not `127.0.0.1`. |
 | A 401 from the live tests | The token file was written under a timestamped name, or left mode 0600. See [§10](./10-retention.md) and the init script. |
+| `ECONNRESET` from `fetch()` on 8181 or 1883 | The port does not speak HTTP. 8181 is TLS-only, 1883 is raw MQTT; the peer closes the socket on a payload it cannot parse. Nothing is down. |

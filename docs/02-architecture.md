@@ -133,6 +133,33 @@ Subscribes to `ws://localhost:8083/mqtt` for sub-second live updates. Vite + Rea
 | 8094 | Telegraf metrics | internal |
 | 3000 | Grafana | localhost |
 | 8000 | FastAPI | localhost |
+
+**Three of these ports are not HTTP, and probing them with an HTTP client fails in a way that
+looks like a broken service.** Verified by fetching each one:
+
+| Port | Fetched with `http://` | Why |
+|---|---|---|
+| 8000, 3000 | works | ordinary HTTP |
+| 8083 | `HTTP 400` | it *is* HTTP, but it wants a WebSocket upgrade, not a GET |
+| **8181** | **`ECONNRESET`** | TLS only. Plain HTTP bytes are not a valid TLS record, so the server closes the socket |
+| **1883** | **`ECONNRESET`** | raw MQTT. An HTTP request is not a CONNECT packet, so the broker closes the socket |
+
+`ECONNRESET` here means *the peer hung up because the payload was not the protocol it speaks* —
+not that anything is down. Node's `fetch` reports the abrupt close that way; `curl` reports it
+as an empty reply.
+
+Reaching InfluxDB from a script:
+
+```bash
+curl --cacert secrets/tls/ca-bundle.crt https://127.0.0.1:8181/health    # OK
+```
+
+The certificate is self-signed and lists `localhost`, `influxdb` and `127.0.0.1` in its SANs, so
+the CA bundle — or the right hostname — is the only obstacle. In Node, `fetch` cannot be given a
+CA directly; use an `undici` `Agent` configured with `ca`, or `NODE_TLS_REJECT_UNAUTHORIZED=0`
+for a throwaway local check.
+
+To reach the broker, use the **WebSocket** listener on 8083 (which is HTTP) rather than 1883.
 | 5173 | PWA dev server (Vite) | localhost |
 
 **HTTP/2 note.** Grafana's SQL datasource uses Flight SQL over gRPC, which requires HTTP/2.
