@@ -11,7 +11,7 @@ than a handful of days, because seasonal edge cases hide in the tails.
 from __future__ import annotations
 
 import math
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 import pytest
@@ -396,3 +396,71 @@ def test_capacity_factor_never_exceeds_one():
     # a suspiciously tiny one -- which is what a missing 1000x would also cause.
     peak = max(t.rollup["capacity_factor"] for t in ticks)
     assert peak > 0.15, f"peak capacity factor {peak:.3f} is implausibly low for a clear day"
+
+
+# --- backfill ---------------------------------------------------------------
+
+
+def test_parse_span_accepts_the_forms_the_help_text_advertises():
+    """The CLI documents 24h/90m/2d/0, so those must all work."""
+    from solar_sim.main import _parse_span
+
+    assert _parse_span("24h") == 24 * 3600
+    assert _parse_span("90m") == 90 * 60
+    assert _parse_span("2d") == 2 * 86400
+    assert _parse_span("1.5h") == 5400
+    assert _parse_span("24 h") == 24 * 3600
+    for off in ("0", "none", "", "off"):
+        assert _parse_span(off) == 0.0, off
+
+
+def test_parse_span_rejects_nonsense_rather_than_returning_zero():
+    """A silent zero here looks exactly like a broken chart.
+
+    Skipping the backfill because the duration was mistyped produces an empty
+    database and an empty 24-hour chart, with no error anywhere. Failing at
+    startup is far cheaper to diagnose.
+    """
+    from solar_sim.main import _parse_span
+
+    for bad in ("24x", "abc", "24hh", "h"):
+        with pytest.raises(SystemExit):
+            _parse_span(bad)
+
+
+def test_backfill_produces_a_full_diurnal_cycle():
+    """A day of history must contain a night, not just a flat line.
+
+    This is the whole point of the backfill: the dashboard opens on a 24-hour
+    chart, and a farm that has only been running for ten minutes collapses that
+    into a single hour bucket.
+    """
+    from datetime import UTC
+
+    farm = SolarFarm(build_default_site(), weather_params=CLEAR_DAY)
+    # A window ending at 12:00 UTC is 05:00 local, so it opens and closes in the
+    # dark with the peak in the middle -- which is the shape to assert on.
+    end = datetime(2026, 6, 21, 12, 0, tzinfo=UTC)
+    begin = end - timedelta(seconds=288 * 300)
+    powers = [farm.step(begin + timedelta(seconds=i * 300), 300).rollup["total_ac_power_w"]
+              for i in range(288)]
+
+    assert len(powers) == 288
+    assert min(powers) == 0.0, "the window should contain a genuine night"
+    assert max(powers) > 800_000, "the window should contain a high point near solar noon"
+
+    # Dark at both ends and lit in between: a cycle, not a ramp or a flat floor.
+    assert powers[0] == 0.0 and powers[-1] == 0.0
+    middle = powers[96:192]  # the middle third, unambiguously daytime
+    # The *mean*, not the minimum. The AR(1) cloud model can drive a sample to
+    # zero when a thick cloud transits, which is physically right; what it must
+    # not do is flatten the whole day. Asserting a minimum here would be
+    # asserting that it never clouds over.
+    assert sum(middle) / len(middle) > 400_000, "the middle of the day should be productive"
+    assert max(middle) == max(powers), "the high point should fall in the daytime"
+
+    # The *position* of the peak is deliberately not asserted. The cloud model
+    # moves it, and on a clear day the array sits on a 1 MW clipping plateau, so
+    # the maximum is a flat top with no single peak index. Asserting a position
+    # would be testing the weather rather than the backfill -- and it did, and
+    # it failed for exactly that reason.

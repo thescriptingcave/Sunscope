@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import signal
 import sys
 import time
@@ -33,6 +34,32 @@ log = logging.getLogger("solar_sim")
 #: Events emitted when a scenario is detected, so the alerting path is
 #: exercised rather than assumed.
 EVENT_THRESHOLD_W = 250_000.0
+
+
+def _parse_span(value: str) -> float:
+    """Parse a duration like ``24h``, ``90m``, ``2d`` into seconds.
+
+    Returns 0 for ``0``, ``none`` or an empty value, so backfill can be switched
+    off without a separate flag. An unparseable value is a hard error rather
+    than a silent zero: quietly skipping 24 hours of history looks exactly like
+    a broken chart, and takes far longer to diagnose than a startup error.
+    """
+    text = str(value).strip().lower()
+    if not text or text in {"0", "none", "off"}:
+        return 0.0
+    compact = text.replace(" ", "")
+    factors = {"s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
+    total = 0.0
+    matched = 0
+    for number, unit in re.findall(r"(\d+(?:\.\d+)?)([smhd])", compact):
+        total += float(number) * factors[unit]
+        matched += len(number) + 1
+    if not matched or matched != len(compact):
+        raise SystemExit(
+            f"cannot parse duration {value!r} "
+            "(expected e.g. 24h, 90m, 2d, or 0 to disable)"
+        )
+    return total
 
 
 def _solar_noon(when: datetime, tz: str, lat: float, lon: float) -> datetime:
@@ -80,6 +107,22 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=float(os.environ.get("SIM_INTERVAL_SECONDS", "30")),
         help="seconds of simulated time per tick (default 30)",
+    )
+    parser.add_argument(
+        "--backfill",
+        type=str,
+        default=os.environ.get("SIM_BACKFILL", "24h"),
+        help=(
+            "simulated history to generate before the live loop starts, e.g. 24h. "
+            "A fresh database otherwise holds minutes of data and a 'last 24 hours' "
+            "chart collapses to a single dot. Set 0 to skip."
+        ),
+    )
+    parser.add_argument(
+        "--backfill-step",
+        type=float,
+        default=float(os.environ.get("SIM_BACKFILL_STEP", "300")),
+        help="seconds of simulated time per backfill tick (default 300)",
     )
     parser.add_argument(
         "--speed",
@@ -198,6 +241,42 @@ def main(argv: list[str] | None = None) -> int:
     step = 0
     exit_code = 0
     try:
+        # --- backfill -------------------------------------------------------
+        # A real site already has history when you connect to it. Without this
+        # the dashboard opens on an empty database: the 24-hour chart receives a
+        # single 1 h bucket per inverter and renders as four isolated dots, and
+        # "energy today" is a rounding error.
+        #
+        # Stepped forward, never backward -- the cloud model is AR(1) and the
+        # inverters carry thermal state, so history has to be *generated* in
+        # order. The farm therefore reaches `start` already warmed up, which is
+        # what a plant that has been generating all day actually looks like.
+        backfill_s = _parse_span(args.backfill)
+        if backfill_s > 0:
+            step_s = max(args.backfill_step, 1.0)
+            ticks = int(backfill_s // step_s)
+            log.info(
+                "backfilling %.0fh of history at %.0fs resolution (%d ticks)",
+                backfill_s / 3600, step_s, ticks,
+            )
+            cursor = start - timedelta(seconds=backfill_s)
+            for i in range(ticks):
+                tick = farm.step(cursor, step_s)
+                publisher.publish_tick(tick)
+                # Events are deliberately not emitted here. Each clipping tick
+                # would add four rows, and the feed would open on hundreds of
+                # identical entries burying anything that matters.
+                cursor += timedelta(seconds=step_s)
+                if i % 48 == 0:
+                    log.info(
+                        "  backfill %d/%d  %s  %.1f kW",
+                        i, ticks,
+                        pd.Timestamp(cursor).tz_convert(site.timezone).strftime("%H:%M"),
+                        tick.rollup["total_ac_power_w"] / 1000,
+                    )
+            log.info("backfill complete; entering the live loop")
+
+        # --- live loop ------------------------------------------------------
         while not stopping:
             tick = farm.step(when, sim_dt)
             counts = publisher.publish_tick(tick)

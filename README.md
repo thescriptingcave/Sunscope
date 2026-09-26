@@ -120,7 +120,7 @@ Credentials live in `.env` (gitignored, mode 600); token files are in `secrets/`
 
 ```
 docs/                 design documentation (9 documents)
-sim/                  Python simulator        (host-run, 62 tests)
+sim/                  Python simulator        (host-run, 65 tests)
 api/                  FastAPI backend         (in compose, 146 tests)
 api/config/alerts.yaml declarative alert rules
 web/                  React PWA              (built to web/dist, served by the API at /)
@@ -141,7 +141,7 @@ Only the simulator runs on the host; the other five components run in Docker.
 | 1 | Scaffold: compose, healthchecks, pinned images | DONE |
 | 2 | InfluxDB schema: 5 tables + Last Value Cache, created before first write | DONE |
 | 3 | Ingest: Telegraf `mqtt_consumer` → InfluxDB, verified end to end | DONE |
-| 4 | Simulator: pvlib physics, fault scenarios, per-inverter MQTT client with LWT | DONE (62 tests) |
+| 4 | Simulator: pvlib physics, fault scenarios, per-inverter MQTT client with LWT | DONE (65 tests) |
 | 5 | FastAPI: auth, `/api/now` off the LVC, `/api/series`, `/api/explore` | DONE (146 tests) |
 | 6 | PWA: live tiles over MQTT/WebSocket | DONE |
 | 7 | Alerting: threshold + staleness rules, in-app feed, event persistence | DONE |
@@ -169,12 +169,24 @@ The simulator runs on the host, because that is where iteration happens.
 ```bash
 cd sim && uv sync
 
-uv run solar-sim                      # starts at solar noon, so data is visible at once
+uv run solar-sim                      # backfills 24 h, then starts at solar noon
+uv run solar-sim --backfill 0         # start with an empty database
 uv run solar-sim --speed 30           # 30× faster than real time
 uv run solar-sim --realtime           # wall-clock time instead
 uv run solar-sim --clear-sky          # no cloud model, useful for comparison
 uv run solar-sim --scenarios config/scenarios/demo.yaml   # with faults
 ```
+
+**Backfill.** On startup the simulator generates 24 h of history at 5-minute
+resolution before entering the live loop. Without it a fresh database holds ten
+minutes of data, the "last 24 hours" chart collapses to a single dot per
+inverter, and daily yield reads in kilowatt-hours rather than megawatt-hours. A
+real site has history when you connect to it. Pass `--backfill 0` to skip it.
+
+History is stepped *forward*, never rewound — the cloud model is AR(1) and the
+inverters carry thermal state, so the farm arrives at the start time already
+warmed up. Events are not emitted during backfill, or the feed would open on
+hundreds of identical clipping entries.
 
 Then query it:
 
@@ -313,7 +325,7 @@ uv run --project api --with paho-mqtt python scripts/watch.py
 ./scripts/bootstrap.sh test
 ```
 
-208 tests, lint, type checking, and four verification scripts — including one
+211 tests, lint, type checking, and four verification scripts — including one
 that loads the PWA in headless Chromium and fails if the live feed does not come
 up. It writes screenshots to `shots/`.
 
