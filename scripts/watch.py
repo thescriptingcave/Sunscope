@@ -100,7 +100,7 @@ def fetch_json(path: str, token: str) -> dict | None:
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout=4) as r:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=4) as r:
             return json.loads(r.read())
     except (urllib.error.URLError, TimeoutError, OSError, ValueError):
         return None
@@ -113,9 +113,12 @@ def read_token() -> str:
     env = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
     password = ""
     if os.path.exists(env):
-        for line in open(env):
-            if line.startswith("API_ADMIN_PASSWORD="):
-                password = line.split("=", 1)[1].strip()
+        # As a context manager: this runs on a refresh loop, so a handle left to
+        # the garbage collector would accumulate one per tick.
+        with open(env) as handle:
+            for line in handle:
+                if line.startswith("API_ADMIN_PASSWORD="):
+                    password = line.split("=", 1)[1].strip()
     if not password:
         return ""
     body = json.dumps({"username": "admin", "password": password}).encode()
@@ -124,7 +127,7 @@ def read_token() -> str:
         headers={"Content-Type": "application/json"}, method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=4) as r:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=4) as r:
             return json.loads(r.read())["token"]
     except (urllib.error.URLError, OSError, ValueError, KeyError):
         return ""

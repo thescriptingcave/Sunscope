@@ -27,7 +27,7 @@ def get(path: str, token: str | None = None) -> object:
     req = urllib.request.Request(BASE + path)
     if token:
         req.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(req, timeout=20) as response:  # noqa: S310
+    with urllib.request.urlopen(req, timeout=20) as response:
         return json.loads(response.read())
 
 
@@ -40,7 +40,7 @@ def post(path: str, body: dict, token: str | None = None) -> object:
     )
     if token:
         req.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(req, timeout=20) as response:  # noqa: S310
+    with urllib.request.urlopen(req, timeout=20) as response:
         return json.loads(response.read())
 
 

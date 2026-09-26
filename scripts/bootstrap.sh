@@ -226,8 +226,13 @@ run_tests() {
   ( cd sim && uv run pytest -q ) || die "simulator tests failed"
   ( cd api && uv run pytest -q ) || die "API tests failed"
   ok "lint"
+  # scripts/ is linted too. It was not, for a while, and the gap hid 16
+  # findings -- including a crash in backup.py whenever the backup directory
+  # lived outside the repo, which is exactly what CI does.
   ( cd sim && uv run ruff check src/ tests/ --output-format=concise ) || die "sim lint failed"
   ( cd api && uv run ruff check src/ tests/ --output-format=concise ) || die "api lint failed"
+  uv run --project api ruff check scripts/*.py --output-format=concise \
+    || die "scripts lint failed"
   ( cd web && npx tsc --noEmit ) || die "web typecheck failed"
 
   step "Verification scripts"
@@ -268,9 +273,92 @@ run_tests() {
   fi
 
   # docs/sql is generated from docs/06-sql-examples.md, so a stale file means the
-  # runnable copies and the teaching document have diverged.
+  # runnable copies and the teaching document have diverged. --check compares
+  # them; --verify then executes every statement against the live database, which
+  # is the only thing that catches a query that is still valid SQL but wrong for
+  # this dialect.
   uv run python scripts/export-sql.py --check \
     || die "docs/sql is out of date; run: uv run python scripts/export-sql.py"
+  uv run python scripts/export-sql.py --verify \
+    || die "a documented SQL example does not run against the live database"
+
+  # Backup/restore round-trip. A backup that cannot be restored is not a backup,
+  # and the restore path is the non-trivial half: it recreates the schema from
+  # the manifest and rebuilds line protocol from CSV. Restores into a scratch
+  # database, never into `solar` -- a verification step has no business being
+  # able to overwrite live data.
+  step "Backup and restore round-trip"
+  if docker compose ps --status running --services 2>/dev/null | grep -qx influxdb; then
+    backup_roundtrip
+  else
+    warn "InfluxDB is not running; skipped the backup round-trip"
+  fi
+}
+
+# --- backup round-trip --------------------------------------------------------
+#
+# Back up to a throwaway directory, restore into a scratch database, drop it.
+#
+# The cleanup state is global rather than local, and that is deliberate. A
+# `trap ... RETURN` inside the function re-fires after the function's locals are
+# gone, so with `set -u` it died on `scratch: unbound variable` — after the
+# database had already been dropped, so the cleanup had worked and the trap then
+# errored trying to repeat itself. Globals make the cleanup idempotent and
+# independent of scope, and the trap is cleared explicitly on the happy path.
+SCRATCH_DB=""
+SCRATCH_DIR=""
+SCRATCH_TOKEN=""
+
+scratch_cleanup() {
+  [[ -z "$SCRATCH_DB" && -z "$SCRATCH_DIR" ]] && return 0
+  if [[ -n "$SCRATCH_DB" && -n "$SCRATCH_TOKEN" ]]; then
+    docker compose exec -T influxdb influxdb3 delete database "$SCRATCH_DB" \
+      --host https://localhost:8181 --tls-no-verify --token "$SCRATCH_TOKEN" -y \
+      >/dev/null 2>&1 || true
+  fi
+  [[ -n "$SCRATCH_DIR" ]] && rm -rf "$SCRATCH_DIR"
+  SCRATCH_DB=""; SCRATCH_DIR=""; SCRATCH_TOKEN=""
+}
+
+backup_roundtrip() {
+  SCRATCH_DB="${BACKUP_SCRATCH_DB:-solar_backup_check}"
+  SCRATCH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/solar-backup.XXXXXX")"
+
+  # The token is a credential, so it is read from the file rather than passed on
+  # a command line, where it would show up in `ps` output.
+  if [[ ! -f secrets/admin-token ]]; then
+    warn "no secrets/admin-token; skipped the backup round-trip"
+    scratch_cleanup
+    return 0
+  fi
+  SCRATCH_TOKEN="$(python3 -c "import json;print(json.load(open('secrets/admin-token'))['token'])")"
+
+  # EXIT rather than RETURN, so it also covers `die` exiting the whole script.
+  trap scratch_cleanup EXIT
+
+  local src rows
+  uv run --project api python scripts/backup.py --backup --dir "$SCRATCH_DIR" \
+    || die "backup failed"
+  src="$(find "$SCRATCH_DIR" -mindepth 1 -maxdepth 1 -type d | head -1)"
+  [[ -n "$src" ]] || die "backup produced no directory"
+  uv run --project api python scripts/backup.py --restore "$src" \
+    --database "$SCRATCH_DB" --create-database \
+    || die "restore failed — a backup that cannot be restored is not a backup"
+
+  # A restore that "succeeds" but writes nothing is the failure mode worth
+  # catching, so confirm the scratch database is actually readable.
+  rows="$(docker compose exec -T influxdb influxdb3 query \
+    'SELECT COUNT(*) AS n FROM inverter_telemetry' \
+    --host https://localhost:8181 --tls-no-verify \
+    --database "$SCRATCH_DB" --token "$SCRATCH_TOKEN" 2>/dev/null \
+    | awk -F'|' 'NF>2 {gsub(/ /,"",$2); if ($2 ~ /^[0-9]+$/ && $2 != "n") print $2}' | tail -1)"
+  if [[ -z "${rows:-}" || "$rows" == "0" ]]; then
+    die "restore wrote no inverter_telemetry rows"
+  fi
+  ok "restored $rows inverter_telemetry rows into $SCRATCH_DB"
+
+  scratch_cleanup
+  trap - EXIT
 }
 
 usage() {

@@ -65,6 +65,7 @@ jobs:
         run: |
           uv run --project sim ruff check src/ tests/
           uv run --project api ruff check src/ tests/
+          uv run --project api ruff check scripts/*.py
           npm --prefix web run build     # runs tsc -b, so it type-checks too
 
       - name: Unit tests (no services required)

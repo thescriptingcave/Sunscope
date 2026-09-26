@@ -88,7 +88,8 @@ class Influx:
             headers={"Authorization": f"Bearer {self.token}",
                      "Content-Type": "application/json"},
         )
-        with self._opener().open(request, timeout=120) as response:  # noqa: S310
+        # The URL is built from settings, not from user input.
+        with self._opener().open(request, timeout=120) as response:
             payload = json.loads(response.read())
         return payload if isinstance(payload, list) else []
 
@@ -100,7 +101,8 @@ class Influx:
             headers={"Authorization": f"Bearer {self.token}",
                      "Content-Type": "text/plain; charset=utf-8"},
         )
-        with self._opener().open(request, timeout=120) as response:  # noqa: S310
+        # The URL is built from settings, not from user input.
+        with self._opener().open(request, timeout=120) as response:
             response.read()
 
     def tables(self) -> list[str]:
@@ -116,6 +118,20 @@ class Influx:
             f"WHERE table_name = '{table}' AND table_schema = 'iox'"
         )
         return {r["column_name"]: r["data_type"] for r in rows if r.get("column_name")}
+
+
+def _display(path: Path) -> str:
+    """A path relative to the repo when possible, absolute when not.
+
+    Path.relative_to raises rather than degrading, and the backup directory need
+    not live inside the repo: CI uses /tmp, and the round-trip check uses a
+    mktemp directory under TMPDIR. Both sit outside ROOT, so the pretty-printing
+    crashed the backup itself.
+    """
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
 
 
 def connect(database: str | None = None) -> Influx:
@@ -241,11 +257,11 @@ def line_protocol(table: str, row: dict, columns: dict[str, str]) -> str | None:
             tags.append(f"{key}={escape_tag(value)}")
             continue
         text = str(value)
-        if data_type.startswith("Float") or data_type.startswith("Double") or data_type.startswith("Decimal"):
+        if data_type.startswith(("Float", "Double", "Decimal")):
             fields.append(f"{key}={text}")
-        elif data_type.startswith("UInt") or data_type.startswith("BigUint"):
+        elif data_type.startswith(("UInt", "BigUint")):
             fields.append(f"{key}={text}u")
-        elif data_type.startswith("Int") or data_type.startswith("BigInt"):
+        elif data_type.startswith(("Int", "BigInt")):
             fields.append(f"{key}={text}i")
         elif data_type.startswith("Bool"):
             fields.append(f"{key}={'true' if text.lower() in ('true', '1') else 'false'}")
@@ -295,7 +311,7 @@ def do_backup(target_root: Path, keep: int, max_age_days: int, database: str | N
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     target = target_root / stamp
     target.mkdir(parents=True, exist_ok=True)
-    print(f"==> backing up {influx.database} to {target.relative_to(ROOT)}")
+    print(f"==> backing up {influx.database} to {_display(target)}")
 
     # The schema is part of the backup, not something restore can discover: a
     # restore into an empty database has no tables, and in InfluxDB 3 tags are
@@ -378,7 +394,8 @@ def prune(target_root: Path, keep: int, max_age_days: int) -> None:
         left = len([d for d in target_root.iterdir() if d.is_dir()])
     else:
         left = 0
-    print(f"    {'pruned %d' % removed if removed else 'nothing to prune'}, {left} retained")
+    outcome = f"pruned {removed}" if removed else "nothing to prune"
+    print(f"    {outcome}, {left} retained")
 
 
 # --- restore -----------------------------------------------------------------
@@ -409,7 +426,9 @@ def do_restore(source: Path, force: bool, database: str | None = None) -> int:
             field_types = ",".join(
                 f"{name}:{_short_type(kind)}" for name, kind in spec["fields"].items()
             )
-            result = subprocess.run(
+            # As above: "already exists" is a legitimate outcome when
+            # restoring over a live database, so returncode is inspected.
+            result = subprocess.run(  # noqa: PLW1510
                 ["docker", "compose", "exec", "-T", "influxdb", "influxdb3",
                  "create", "table", table,
                  "--database", influx.database,
@@ -483,7 +502,7 @@ def do_list(target_root: Path) -> int:
     if not entries:
         print(f"no backups yet in {target_root}")
         return 0
-    print(f"==> backups in {target_root.relative_to(ROOT)}")
+    print(f"==> backups in {_display(target_root)}")
     for directory in entries:
         size = sum(f.stat().st_size for f in directory.glob("*.csv"))
         rows = tables = "?"
@@ -518,7 +537,9 @@ def main() -> int:
     if args.database:
         if args.create_database:
             # The CLI has no SQL path for DDL; `influxdb3 create` does.
-            result = subprocess.run(
+            # returncode is inspected below: an existing database is fine, so
+            # check=True would turn a normal case into a failure.
+            result = subprocess.run(  # noqa: PLW1510
                 ["docker", "compose", "exec", "-T", "influxdb", "influxdb3",
                  "create", "database", args.database,
                  "--host", "https://localhost:8181", "--tls-no-verify",

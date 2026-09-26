@@ -31,12 +31,12 @@ TIERS = {
 }
 
 SECTION = re.compile(r"\n(### ([BIAE])(\d+) — ([^\n]+))\n")
-SQL_BLOCK = re.compile(r"```sql\n(.*?)```", re.S)
+SQL_BLOCK = re.compile(r"```sql\n(.*?)```", re.DOTALL)
 
 NAMED_WINDOW = re.compile(
     r"\b(ROW_NUMBER|RANK|DENSE_RANK|LAG|LEAD|FIRST_VALUE|LAST_VALUE|NTH_VALUE"
     r"|CUME_DIST|PERCENT_RANK)\s*\(",
-    re.I,
+    re.IGNORECASE,
 )
 
 
@@ -52,17 +52,18 @@ def slug(title: str) -> str:
 def features(sql: str) -> list[str]:
     """Which SQL features a query demonstrates, for the index."""
     found: list[str] = []
-    if re.search(r"^\s*WITH\b", sql, re.I | re.M):
+    if re.search(r"^\s*WITH\b", sql, re.IGNORECASE | re.MULTILINE):
         found.append("CTE")
-    if re.search(r"\bOVER\s*\(", sql, re.I):
+    if re.search(r"\bOVER\s*\(", sql, re.IGNORECASE):
         found.append("window function")
-    for name in sorted({m.group(1).upper() for m in NAMED_WINDOW.finditer(sql)}):
-        found.append(name)
-    if re.search(r"\b(ROWS|RANGE)\s+BETWEEN", sql, re.I):
+    found.extend(
+        sorted({match.group(1).upper() for match in NAMED_WINDOW.finditer(sql)})
+    )
+    if re.search(r"\b(ROWS|RANGE)\s+BETWEEN", sql, re.IGNORECASE):
         found.append("frame")
-    if re.search(r"date_bin|date_trunc", sql, re.I):
+    if re.search(r"date_bin|date_trunc", sql, re.IGNORECASE):
         found.append("time bucketing")
-    if re.search(r"\(\s*SELECT", sql, re.I):
+    if re.search(r"\(\s*SELECT", sql, re.IGNORECASE):
         found.append("subquery")
     return found
 
@@ -212,8 +213,10 @@ def index(queries: list[dict[str, object]], files: dict[str, str]) -> str:
     out = [
         "# SQL examples, one file each",
         "",
-        "**Generated from [docs/06-sql-examples.md](../06-sql-examples.md) — do not edit by "
-        "hand.**",
+        (
+            "**Generated from [docs/06-sql-examples.md](../06-sql-examples.md) — "
+            "do not edit by hand.**"
+        ),
         "",
         "```bash",
         "uv run python scripts/export-sql.py           # regenerate from the document",
@@ -221,9 +224,12 @@ def index(queries: list[dict[str, object]], files: dict[str, str]) -> str:
         "uv run python scripts/export-sql.py --verify  # execute every file against InfluxDB",
         "```",
         "",
-        "Every file is executed against the live database by `export-sql.py --verify`, and "
-        "`bootstrap.sh test` fails if these files have drifted from the document they are "
-        "generated from. Neither can rot unnoticed.",
+        (
+            "Every file is executed against the live database by "
+            "`export-sql.py --verify`, and `bootstrap.sh test` fails if these "
+            "files have drifted from the document they are generated from. "
+            "Neither can rot unnoticed."
+        ),
         "",
     ]
     for tag, (tier_name, tier_focus) in TIERS.items():
