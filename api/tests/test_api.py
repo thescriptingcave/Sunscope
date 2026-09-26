@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 
 from solar_api import main as mainmod
 from solar_api.auth import limiter
-from solar_api.config import Settings
+from solar_api.config import Settings, read_secret_file
 from solar_api.config import get_settings as real_get_settings
 from solar_api.influx import InfluxError
 
@@ -271,12 +271,30 @@ def test_influx_failure_becomes_a_502(client: TestClient):
 
 
 def test_influx_error_message_never_leaks_the_token(client: TestClient):
-    """A 502 body must not contain the credential."""
+    """A 502 body must not contain the credential.
+
+    The real risk is that an httpx exception string carries the request URL,
+    and a token can end up in one. The token assertion is conditional on the
+    value being non-empty, because the configured token is normally *empty* in
+    the environment -- it is read from `secrets/api-read.token` by design, so it
+    never appears in the process environment. Asserting that an empty string is
+    absent from a string is vacuously false, so the original version of this
+    check could only ever fail, and would have been deleted as flaky rather than
+    fixed had a fresh `gen-secrets` not exposed it.
+    """
     token = login(client)
     client.stub.raise_with = InfluxError("connection refused")
     body = client.get("/api/now", headers=auth(token)).text
-    assert real_get_settings().influx_api_token not in body
     assert "test-token" not in body
+
+    settings = real_get_settings()
+    configured = settings.influx_api_token or read_secret_file(settings.influx_token_file)
+    if configured:
+        assert configured not in body
+    else:
+        # Nothing is configured, so nothing could leak; assert the body is still
+        # a real error rather than passing on a no-op check.
+        assert "connection refused" in body
 
 
 # --- meta -------------------------------------------------------------------

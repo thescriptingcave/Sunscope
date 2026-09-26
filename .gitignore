@@ -31,6 +31,8 @@ influxdb.bolt
 influxdb.v1
 logs/
 *.log
+# Written by scripts/bootstrap.sh when it starts the simulator on the host.
+.sim.pid
 
 # --- Editors / OS ---
 .DS_Store

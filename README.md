@@ -9,27 +9,61 @@ Full design documentation is in [`docs/`](./docs/).
 ## Quick start
 
 ```bash
-./scripts/gen-secrets.sh     # generate tokens, write .env (gitignored) and secrets/
-docker compose up -d         # EMQX, InfluxDB, Telegraf, Grafana; runs init first
-docker compose ps            # all four should be healthy
+./scripts/bootstrap.sh up
 ```
 
-`influx-init` runs automatically on first `up`. It creates the database, the five tables, the
-Last Value Cache, and per-component tokens — **before** Telegraf starts. That ordering is
-required: InfluxDB 3 tag definitions are immutable once a table exists, so the schema has to be
-created explicitly rather than inferred from the first write.
+That is the whole thing. From a clean checkout it checks prerequisites, generates secrets and
+a TLS certificate, builds the PWA, starts the stack, waits for it to be healthy, and launches
+the simulator. First run takes a few minutes while images build; later runs are fast.
+
+Then open **http://127.0.0.1:8000/** and sign in as `admin` with the `API_ADMIN_PASSWORD`
+value from `.env`.
+
+`make up` does the same thing if you prefer. The full verb set:
+
+| Command | Effect |
+|---|---|
+| `./scripts/bootstrap.sh up` | Bring everything up. Idempotent — safe to re-run |
+| `./scripts/bootstrap.sh status` | What is running, and every endpoint |
+| `./scripts/bootstrap.sh test` | All test suites plus the three verification scripts |
+| `./scripts/bootstrap.sh sim:stop` | Stop the simulator (the stack keeps running) |
+| `./scripts/bootstrap.sh down` | Stop everything, keep the database |
+| `./scripts/bootstrap.sh reset` | Destroy the database, secrets and TLS material |
+
+`up` will not clobber existing secrets — `gen-secrets.sh` only fills values still set to a
+`change-me` placeholder — and it never touches the database.
+
+<details>
+<summary>The manual equivalent, if you would rather drive the pieces yourself</summary>
+
+```bash
+./scripts/gen-secrets.sh          # tokens, .env (gitignored), secrets/
+./scripts/gen-tls-cert.sh         # self-signed cert; InfluxDB will not start without it
+(cd web && npm install && npm run build)
+docker compose up -d              # influx-init runs automatically, before Telegraf
+(cd sim && uv run solar-sim)
+```
+
+The ordering is not arbitrary. InfluxDB is given `--tls-cert` on the command line, so the
+certificate must exist before the container starts. The API mounts `web/dist`, so the PWA
+must be built first. And `influx-init` must finish before Telegraf writes anything, because
+InfluxDB 3 tag definitions are immutable once a table exists — the schema has to be created
+explicitly rather than inferred from the first write. Compose enforces the container
+ordering; the script enforces the rest.
+
+</details>
 
 ### Services
 
 | Service | URL | Purpose |
 |---|---|---|
+| Dashboard | http://127.0.0.1:8000 | The PWA, served same-origin by the API |
 | EMQX console | http://127.0.0.1:18083 | Inspect live topics and retained messages |
 | MQTT (TCP) | `127.0.0.1:1883` | Simulator publishes here |
 | MQTT (WebSocket) | `ws://127.0.0.1:8083/mqtt` | The PWA subscribes here for live tiles |
-| InfluxDB 3 | http://127.0.0.1:8181 | SQL only — Flux is not supported on 3.x |
+| InfluxDB 3 | https://127.0.0.1:8181 | SQL only — Flux is not supported on 3.x. Self-signed TLS |
 | Grafana | http://127.0.0.1:3000 | Dashboards (datasource blocked, see docs/grafana-influxdb-notes.md) |
 | API | http://127.0.0.1:8000 | Backend. OpenAPI docs at `/docs` |
-| API docs | http://127.0.0.1:8000/docs | Interactive OpenAPI |
 
 Credentials are in `.env` (gitignored, mode 600). `secrets/` holds token files and is also
 gitignored.
@@ -61,14 +95,15 @@ docker compose exec influxdb influxdb3 query \
 
 ```
 docs/                 design documentation (9 documents)
-sim/                  Python simulator        (host-run, 38 tests)
-api/                  FastAPI backend         (in compose, 145 tests)
+sim/                  Python simulator        (host-run, 62 tests)
+api/                  FastAPI backend         (in compose, 146 tests)
 api/config/alerts.yaml declarative alert rules
 web/                  React PWA              (built to web/dist, served by the API at /)
 telegraf/             MQTT -> InfluxDB config
 grafana/provisioning/ datasource + dashboard provisioning
-scripts/              gen-secrets, gen-tls-cert, influx-init, telegraf-entrypoint,
+scripts/              bootstrap, gen-secrets, gen-tls-cert, influx-init, telegraf-entrypoint,
                       check-pwa-contract, check-live-ws, check-doc-sql, inject-fault
+Makefile              thin wrapper over scripts/bootstrap.sh
 ```
 
 ## Build order
