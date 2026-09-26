@@ -51,6 +51,15 @@ log = logging.getLogger("solar_api")
 
 SITE = "mojave"
 
+#: Shared `Query` help for the start/end pair, which four endpoints take
+#: identically. Declared once so the wording cannot drift between them — these
+#: strings are the only documentation a Postman user sees for these arguments.
+WINDOW_HELP = (
+    "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last "
+    "24 hours. Note the simulator publishes its own timestamps, which do not "
+    "track wall-clock time, so a recent-looking range can come back empty."
+)
+
 
 class LoginRequest(BaseModel):
     username: str = Field(max_length=128)
@@ -298,8 +307,8 @@ def create_app() -> FastAPI:
 
     @app.get("/api/summary", tags=["telemetry"])
     async def summary(
-        start: str | None = None,
-        end: str | None = None,
+        start: str | None = Query(default=None, description=WINDOW_HELP),
+        end: str | None = Query(default=None, description=WINDOW_HELP),
         subject: str = Depends(require_auth),
         settings: Settings = Depends(get_settings),
         client: InfluxClient = Depends(_client),
@@ -340,13 +349,38 @@ def create_app() -> FastAPI:
 
     @app.get("/api/series", tags=["telemetry"])
     async def series(
-        table: str = Query(default="inverter_telemetry"),
-        metric: str = Query(default="ac_power_w"),
-        start: str | None = None,
-        end: str | None = None,
-        interval: str = Query(default="5m"),
-        group_by: str | None = None,
-        limit: int = Query(default=5000, ge=1, le=5000),
+        table: str = Query(
+            default="inverter_telemetry",
+            description="Source table. GET /api/meta lists the allowed values.",
+            examples=["inverter_telemetry"],
+        ),
+        metric: str = Query(
+            default="ac_power_w",
+            description="Field to plot. Must be a field OF THE CHOSEN TABLE — "
+                        "'dc_power_w' is valid on string_telemetry but not on "
+                        "site_rollup. /api/meta gives per-table lists.",
+            examples=["ac_power_w"],
+        ),
+        start: str | None = Query(default=None, description=WINDOW_HELP),
+        end: str | None = Query(default=None, description=WINDOW_HELP),
+        interval: str = Query(
+            default="5m",
+            description="Bucket width for aggregation. One of 1m, 5m, 15m, 1h, "
+                        "6h, 1d, raw. 'raw' returns unbucketed points.",
+            examples=["5m"],
+        ),
+        group_by: str | None = Query(
+            default=None,
+            description="Split into one series per value of this dimension. "
+                        "Dimensions are per-table too: inverter_id and block for "
+                        "inverter_telemetry, string_id for string_telemetry.",
+            examples=["inverter_id"],
+        ),
+        limit: int = Query(
+            default=5000, ge=1, le=5000,
+            description="Maximum points returned, 1-5000. Exceeding it returns "
+                        "the most recent 5000 rather than an error.",
+        ),
         subject: str = Depends(require_auth),
         settings: Settings = Depends(get_settings),
         client: InfluxClient = Depends(_client),
@@ -383,9 +417,15 @@ def create_app() -> FastAPI:
 
     @app.get("/api/strings", tags=["telemetry"])
     async def strings(
-        start: str | None = None,
-        end: str | None = None,
-        min_imbalance: float = Query(default=0.0, ge=0.0, le=1.0),
+        start: str | None = Query(default=None, description=WINDOW_HELP),
+        end: str | None = Query(default=None, description=WINDOW_HELP),
+        min_imbalance: float = Query(
+            default=0.0, ge=0.0, le=1.0,
+            description="Only report strings imbalanced by at least this much, "
+                        "as a fraction of the strongest string in the sample. "
+                        "0.05 is 5%.",
+            examples=[0.05],
+        ),
         expected_strings: int = Query(
             default=3, ge=1, le=12,
             description="Strings per inverter; samples missing any are not scored",
@@ -411,9 +451,15 @@ def create_app() -> FastAPI:
 
     @app.get("/api/events", tags=["telemetry"])
     async def events(
-        start: str | None = None,
-        end: str | None = None,
-        severity: list[str] | None = Query(default=None),
+        start: str | None = Query(default=None, description=WINDOW_HELP),
+        end: str | None = Query(default=None, description=WINDOW_HELP),
+        severity: list[str] | None = Query(
+            default=None,
+            description="Filter by severity. Repeat the parameter for several: "
+                        "?severity=critical&severity=info. One of critical, "
+                        "warning, info.",
+            examples=[["critical"]],
+        ),
         subject: str = Depends(require_auth),
         settings: Settings = Depends(get_settings),
         client: InfluxClient = Depends(_client),
@@ -430,9 +476,25 @@ def create_app() -> FastAPI:
 
     @app.get("/api/alerts", tags=["alerting"])
     async def alerts(
-        severity: list[str] | None = Query(default=None),
-        subject_name: str | None = Query(default=None, alias="subject"),
-        include_resolved: bool = Query(default=False),
+        severity: list[str] | None = Query(
+            default=None,
+            description="Filter by severity. Repeat the parameter for several: "
+                        "?severity=critical&severity=warning. One of "
+                        "critical, warning, info.",
+            examples=[["critical"]],
+        ),
+        subject_name: str | None = Query(
+            default=None,
+            alias="subject",
+            description="Filter to one asset. The site itself is 'mojave'; "
+                        "inverters are 'INV-01'..'INV-04'.",
+            examples=["INV-02"],
+        ),
+        include_resolved: bool = Query(
+            default=False,
+            description="Include alerts that have since resolved. Default false, "
+                        "so this is the currently-firing set only.",
+        ),
         _auth: str = Depends(require_auth),
         service: AlertService = Depends(_alerts),
     ) -> dict[str, Any]:
@@ -525,7 +587,14 @@ def create_app() -> FastAPI:
         # `request` has no default: FastAPI injects it, and a defaulted Request
         # would be misread as a query parameter.
         request: Request,
-        sql: str = Query(..., min_length=1, max_length=4000),
+        sql: str = Query(
+            ..., min_length=1, max_length=4000,
+            description="A single read-only SQL statement. Bind user input with "
+                        "$name and pass values via the `params` argument — never "
+                        "concatenate them into the string. Restricted to the local "
+                        "host.",
+            examples=["SELECT * FROM site_rollup ORDER BY time DESC LIMIT 5"],
+        ),
         params: str | None = Query(
             default=None,
             description='JSON object of $name bindings, e.g. {"site":"mojave"}',
