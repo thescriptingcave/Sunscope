@@ -27,14 +27,26 @@ set_if_placeholder() {
   fi
 }
 
-token() { printf 'apiv3_%s' "$(openssl rand -hex 32)"; }
+# InfluxDB tokens must literally begin with `apiv3_` or the server rejects them
+# with "Invalid token format". That format is specific to InfluxDB.
+influx_token() { printf 'apiv3_%s' "$(openssl rand -hex 32)"; }
+
+# Everything else gets its own generator, so a dashboard password cannot be
+# mistaken for a database credential. They used to all come from one `token()`
+# helper, which meant every secret in .env was prefixed `apiv3_` -- including
+# the API admin password and the JWT signing key. Nothing was shared or derived
+# across trust boundaries, but a secret that looks like a token invites being
+# pasted into the wrong field, and reading one as a token when it is not.
+# 32 hex bytes = 128 bits, comfortably above any local-development need.
+password() { openssl rand -hex 16; }
+secret_key() { openssl rand -hex 32; }
 
 echo "==> Generating secrets"
-set_if_placeholder INFLUX_ADMIN_TOKEN  "$(token)"
-set_if_placeholder EMQX_DASHBOARD_PASSWORD "$(token | head -c 20)"
-set_if_placeholder GRAFANA_ADMIN_PASSWORD "$(token | head -c 20)"
-set_if_placeholder API_SECRET_KEY     "$(token)"
-set_if_placeholder API_ADMIN_PASSWORD  "$(token | head -c 20)"
+set_if_placeholder INFLUX_ADMIN_TOKEN       "$(influx_token)"
+set_if_placeholder EMQX_DASHBOARD_PASSWORD  "$(password)"
+set_if_placeholder GRAFANA_ADMIN_PASSWORD   "$(password)"
+set_if_placeholder API_SECRET_KEY           "$(secret_key)"
+set_if_placeholder API_ADMIN_PASSWORD       "$(password)"
 
 # The InfluxDB server reads its offline admin token from a file, so the token
 # never appears in the container environment.
