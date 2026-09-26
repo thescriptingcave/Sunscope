@@ -14,7 +14,10 @@ Sunscope: a physics-based solar farm simulator with a real-time web and mobile d
 | 4 | [Security](./04-security.md) | Threat model, per-tier controls, the MQTT-WebSocket exposure cliff |
 | 5 | [Testing](./05-testing.md) | Test strategy, pyramid, physics validation, MQTT contract tests, SQL regression, load tests |
 | 6 | [SQL Examples](./06-sql-examples.md) | Beginner → Expert InfluxDB 3 Core SQL, including CTEs and window functions |
-| 7 | [Alerting](./07-alerting.md) | Rules, debounce and hysteresis, the staleness check, alert persistence |
+| 7 | [Alerting](./07-alerting.md) | Rules, debounce and re-arm, the staleness check, alert persistence |
+| 8 | [Retention](./10-retention.md) | Why InfluxDB 3 Core cannot prune, and the only reclaim path that works |
+| 9 | [Glossary](./11-glossary.md) | Every term defined once: PV physics, telemetry, alerting, and the traps |
+| 10 | [Dashboards](./12-dashboards.md) | Panel-by-panel tour of both Grafana dashboards and the PWA |
 
 ## Canonical identifiers
 
@@ -40,7 +43,7 @@ Used consistently across every document. Changing any of these requires updating
 | Time series | InfluxDB 3 Core (`influxdb:3.11-core`) | `latest` now resolves to 3 Core, so images are pinned |
 | Grafana | 12.2+, **SQL** query language | Flux is not supported on InfluxDB 3.x |
 | Web + mobile | Single React PWA | One codebase, installable to iOS/Android, live data over MQTT/WebSocket |
-| Backend | FastAPI + JWT | Queries InfluxDB, evaluates alert rules, sends Web Push |
+| Backend | FastAPI + JWT | Queries InfluxDB, evaluates alert rules, relays MQTT to the PWA |
 | Faults | Included | Otherwise alert rules never fire and dashboard panels stay empty |
 | HTTPS | Localhost only (initially) | Web Push deferred until a tunnel or domain exists — see Security doc |
 

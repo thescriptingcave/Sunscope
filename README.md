@@ -456,4 +456,6 @@ Non-obvious behaviours, all verified by running them. Full list in
 | 6 | [SQL Examples](./docs/06-sql-examples.md) | Beginner → Expert InfluxDB SQL, all 35 executed against the live database. Runnable copies in [docs/sql/](./docs/sql/) |
 | 7 | [Alerting](./docs/07-alerting.md) | Rules, debounce and hysteresis, the staleness check |
 | 8 | [Retention](./docs/10-retention.md) | Why InfluxDB 3 Core cannot prune, and the only reclaim path that works |
+| 9 | [Glossary](./docs/11-glossary.md) | Every term defined once: PV physics, telemetry, alerting, and the traps |
+| 10 | [Dashboards](./docs/12-dashboards.md) | Panel-by-panel tour of both Grafana dashboards and the PWA |
 | — | [Grafana notes](./docs/grafana-influxdb-notes.md) | Flight SQL, TLS trust, the `database` header, and writing panels |
