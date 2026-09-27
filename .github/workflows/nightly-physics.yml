@@ -1,0 +1,71 @@
+name: Nightly
+
+# Full-year physics sweep.
+#
+# WHY THIS IS SEPARATE FROM CI
+#
+# The per-push suite checks the physics over a handful of representative days, because a
+# fast gate is the only kind anyone runs reliably. This checks a **full simulated year**,
+# which costs about 90 seconds and therefore does not belong in a push.
+#
+# The seasonal assertions are the point. A winter-solstice bug, an equinox geometry error, or
+# a date-handling slip produces a plausible-looking day and a wrong year, and every single-day
+# test passes on it. Only a year catches those -- which is why this is scheduled rather than
+# merely "a slower job".
+#
+# WHAT A FAILURE MEANS
+#
+# The sky model here is deterministic (clear and still), so a failure is a real regression
+# rather than weather noise. A failure on an unchanged commit means a threshold has drifted
+# and is itself worth reporting.
+
+on:
+  schedule:
+    # 06:17 UTC. Deliberately not :00 -- the top of the hour is when every scheduled job
+    # on the platform fires, and the queue is measurably slower for no benefit here.
+    - cron: "17 6 * * *"
+  workflow_dispatch:   # so it can be run on demand, and so a PR can trigger it manually
+  push:
+    # Only when the physics itself changes. A docs-only or dashboard-only commit has no
+    # business spending 90 seconds of runner time, and this keeps the cost honest.
+    paths:
+      - "sim/**"
+      - "docs/01-design.md"
+
+concurrency:
+  group: nightly-physics-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    name: full-year physics sweep
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --project sim --all-groups
+
+      - name: Lint the sweep
+        run: uv run --project sim ruff check tests/ --output-format=concise
+
+      - name: Full-year sweep
+        # -v so a failure names the assertion, and the log carries the per-test durations
+        # that show which invariant is the slow one.
+        run: uv run --project sim pytest tests/test_physics_sweep.py -v --durations=5
+
+      - name: Single-day physics suite too
+        # Cheap next to the sweep, and it is the suite that actually localises a regression
+        # to a specific invariant. Run alongside so a nightly failure says *which* test.
+        run: uv run --project sim pytest tests/test_physics.py -q

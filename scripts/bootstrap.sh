@@ -279,7 +279,10 @@ show_status() {
 
 run_tests() {
   step "Tests"
-  ( cd sim && uv run pytest -q ) || die "simulator tests failed"
+  # The full-year sweep is excluded here for the same reason as in CI: ~90 s is
+  # affordable on a schedule and not on every run. Run it with `make sweep`.
+  ( cd sim && uv run pytest -q --ignore=tests/test_physics_sweep.py ) \
+    || die "simulator tests failed"
   ( cd api && uv run pytest -q ) || die "API tests failed"
   ok "lint"
   # scripts/ is linted too. It was not, for a while, and the gap hid 16
@@ -520,6 +523,17 @@ show_disk() {
   warn "Reclaiming means rebuilding the volume -- see docs/10-retention.md"
 }
 
+# --- full-year physics sweep --------------------------------------------------
+#
+# Simulates 365 days at 30-minute resolution and checks every physics invariant across
+# the whole year, rather than the five representative days the fast suite uses. ~90 s,
+# which is why it is a separate command and a nightly workflow rather than part of `test`.
+run_sweep() {
+  step "Full-year physics sweep"
+  ( cd sim && uv run pytest tests/test_physics_sweep.py -v --durations=5 ) \
+    || die "the full-year physics sweep failed"
+}
+
 usage() {
   cat <<'USAGE'
 solar farm simulator — bootstrap
@@ -529,6 +543,7 @@ solar farm simulator — bootstrap
   reset      destroy everything including the database and secrets
   status     show what is running, and the endpoints
   disk       storage used and the projected growth rate
+  sweep      full-year physics sweep (~90 s); runs nightly in CI
   test       run every test suite and verification script
   sim:start  start the simulator on the host
   sim:stop   stop the simulator
@@ -586,6 +601,7 @@ case "${1:-up}" in
   reset)      cmd_reset ;;
   status)     show_status ;;
   disk)       show_disk ;;
+  sweep)      run_sweep ;;
   test)       run_tests ;;
   sim:start)  start_simulator ;;
   sim:stop)   stop_simulator ;;

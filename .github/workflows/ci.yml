@@ -79,7 +79,10 @@ jobs:
           #     sim/tests and api/tests and fails to import solar_sim;
           #   - [tool.pytest.ini_options] lives in each pyproject.toml, so from
           #     the root pytest never sees testpaths or pythonpath.
-          ( cd sim && uv run pytest -q )
+          # test_physics_sweep.py is excluded: it simulates a full year and costs
+          # ~90 s, which is affordable nightly and not on every push. It runs in
+          # .github/workflows/nightly-physics.yml, and on any push touching sim/.
+          ( cd sim && uv run pytest -q --ignore=tests/test_physics_sweep.py )
           # test_live.py talks to a real InfluxDB and has no skip guard, so it
           # would fail here rather than skip; it runs in the integration job.
           # test_pwa.py self-skips without a bundle, and the build step above

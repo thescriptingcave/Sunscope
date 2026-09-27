@@ -8,7 +8,7 @@ SHELL := /bin/bash
 BOOTSTRAP := ./scripts/bootstrap.sh
 
 .DEFAULT_GOAL := help
-.PHONY: help up down reset status disk test sim-start sim-stop logs
+.PHONY: help up down reset status disk test sweep sim-start sim-stop logs
 
 help: ## show this help
 	@$(BOOTSTRAP) help
@@ -30,6 +30,9 @@ disk: ## storage used and the projected growth rate
 
 test: ## every test suite and verification script
 	@$(BOOTSTRAP) test
+
+sweep: ## full-year physics sweep (~90 s)
+	@$(BOOTSTRAP) sweep
 
 sim-start: ## start the simulator on the host
 	@$(BOOTSTRAP) sim:start

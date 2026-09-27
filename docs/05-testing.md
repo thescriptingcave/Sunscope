@@ -90,6 +90,34 @@ def test_pr_in_plausible_band(site, clear_day):
 Parameterising over a full year rather than a handful of days is deliberate: seasonal
 edge cases and polar-style low-sun conditions hide in the tails.
 
+### 2.5 Full-year sweep (nightly)
+
+`sim/tests/test_physics_sweep.py`, ten tests, ~90 s, scheduled daily at 06:17 UTC.
+
+The tests above parameterise over five days — the equinoxes, the solstices and a shoulder
+day. That is the right sample for a fast gate and the wrong sample for confidence, because a
+seasonal regression lives in the tails.
+
+What the sweep adds that the single-day suite cannot:
+
+| Assertion | Why it needs a year |
+|---|---|
+| PR monthly means in 0.78–0.92 | Individual clear-day samples range 0.72–0.93 with cell temperature; only the *mean* is tight enough to catch a drifting loss coefficient |
+| Yield strictly unimodal about the solstices | Pins the phase of the seasonal term exactly. A declination sign error or a date slip breaks monotonicity and survives every other test |
+| Day length between December and June, equinoxes in between | Cheapest detector for a time-step refactor that would leave a fixed 12-hour day |
+| Peak noon GHI bounded 400–1200 W/m² | Catches declination applied twice, or latitude used as declination |
+| Every invariant across all 17,520 ticks | A NaN appearing only on the winter solstice would poison weeks of stored data |
+
+Two of its own first-draft assertions were wrong and are recorded in the module docstring,
+because a sweep that fails on correct code is worse than no sweep:
+
+- Pairing each month with the one six months away. March vs September is roughly fair; April
+  vs October is not, and April legitimately out-produced October by 15 % — long days and a
+  decent sun against short days and a low one. A calendar month is not a solar one. Replaced
+  with strict unimodality, which is both correct and stronger.
+- Comparing monthly *total* energy rather than mean daily yield, which let March's 31st day
+  out-produce all of September.
+
 ## 3. MQTT contract tests
 
 The simulator and the database must agree on names and types, and tag immutability means a
