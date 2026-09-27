@@ -394,6 +394,25 @@ outstanding token at once. This trade is pinned by
 `test_a_role_change_applies_to_new_logins_and_not_to_live_tokens` so that changing it is a
 deliberate act.
 
+**Adding an account.** The password is read without echo and hashed in one step, so it
+never reaches the shell history, `ps` output, or a log:
+
+```bash
+./scripts/bootstrap.sh user alice              # a viewer, the default
+./scripts/bootstrap.sh user alice admin         # full access
+```
+
+That is a thin wrapper over the CLI, which is the real interface and is what
+`gen-secrets.sh` uses:
+
+```bash
+cd api && printf 'the-new-password' | uv run python -m solar_api.users \
+    --add config/users.yaml --user alice --role viewer
+```
+
+Prefer stdin over the argument form. A password passed as `argv` is visible to every
+process on the machine for as long as it runs.
+
 **Where the role is not enforced.** The PWA has no SQL surface — `/api/explore` is
 reached from Postman or `curl`, not from the app — so the role badge in the header is
 identity, not a gate. Every panel is readable by a viewer. The badge is there so the
