@@ -18,6 +18,7 @@ Sunscope: a physics-based solar farm simulator with a real-time web and mobile d
 | 8 | [Retention](./10-retention.md) | Why InfluxDB 3 Core cannot prune, and the only reclaim path that works |
 | 9 | [Glossary](./11-glossary.md) | Every term defined once: PV physics, telemetry, alerting, and the traps |
 | 10 | [Dashboards](./12-dashboards.md) | Panel-by-panel tour of both Grafana dashboards and the PWA |
+| 11 | [Postman](./13-postman.md) | Drive the whole API from Postman, and watch the role boundary from the inside |
 
 ## Canonical identifiers
 

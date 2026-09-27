@@ -675,7 +675,7 @@ def create_app() -> FastAPI:
             **service.counters,
         }
 
-    @app.get("/api/explore", tags=["telemetry"])
+    @app.get("/api/explore", tags=["explore"])
     async def explore(
         # `request` has no default: FastAPI injects it, and a defaulted Request
         # would be misread as a query parameter.
@@ -764,7 +764,7 @@ def create_app() -> FastAPI:
         rows = await client.query(checked, bindings or None)
         return {"sql": checked, "count": len(rows), "rows": rows}
 
-    @app.post("/api/live-ticket", tags=["telemetry"])
+    @app.post("/api/live-ticket", tags=["live"])
     async def live_ticket(
         subject: str = Depends(require_auth),
         service: AlertService = Depends(_alerts),

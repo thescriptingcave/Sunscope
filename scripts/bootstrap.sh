@@ -341,6 +341,13 @@ run_tests() {
   uv run python scripts/export-sql.py --verify \
     || die "a documented SQL example does not run against the live database"
 
+  # The Postman collection and api/openapi.json are both generated from the running API's
+  # own schema, so a stale one means a request in it no longer matches the endpoint it
+  # calls -- which Postman will not tell you about, because a request for a 404 is still a
+  # valid request. Needs the API up, so it lives in the gate rather than the lint step.
+  uv run --project api python scripts/gen-postman.py --check \
+    || die "the Postman collection is out of date; run: uv run --project api python scripts/gen-postman.py"
+
   # Backup/restore round-trip. A backup that cannot be restored is not a backup,
   # and the restore path is the non-trivial half: it recreates the schema from
   # the manifest and rebuilds line protocol from CSV. Restores into a scratch

@@ -147,6 +147,10 @@ jobs:
           uv run python scripts/export-sql.py --check
           uv run python scripts/export-sql.py --verify
 
+      - name: Postman collection is generated and in sync
+        run: |
+          uv run --project api python scripts/gen-postman.py --check
+
       - name: Exposure check (nothing reachable off-loopback, security model holds)
         run: |
           # The audit half. The --test half needs a non-loopback address to probe, which

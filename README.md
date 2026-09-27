@@ -75,6 +75,18 @@ digests, never in the clear. See [docs/04-security.md §4.7](docs/04-security.md
 
 </details>
 <details>
+<summary>Driving the API by hand — Postman</summary>
+
+There is a ready-made Postman collection in `docs/postman/`. Import it, set
+`password` in the environment, run **1. Auth → Login** once, and every other
+request works. It covers all 13 endpoints, and the Explore request is the
+quickest way to see the role boundary: switch `username` to `viewer` in the
+environment, re-run Login, and it turns from `200` into `403`.
+
+Full walkthrough: [docs/13-postman.md](./docs/13-postman.md).
+
+</details>
+<details>
 <summary>Driving the pieces yourself instead</summary>
 
 ```bash
@@ -478,4 +490,5 @@ Non-obvious behaviours, all verified by running them. Full list in
 | 8 | [Retention](./docs/10-retention.md) | Why InfluxDB 3 Core cannot prune, and the only reclaim path that works |
 | 9 | [Glossary](./docs/11-glossary.md) | Every term defined once: PV physics, telemetry, alerting, and the traps |
 | 10 | [Dashboards](./docs/12-dashboards.md) | Panel-by-panel tour of both Grafana dashboards and the PWA |
+| 11 | [Postman](./docs/13-postman.md) | Drive the whole API from Postman, and watch the role boundary from the inside |
 | — | [Grafana notes](./docs/grafana-influxdb-notes.md) | Flight SQL, TLS trust, the `database` header, and writing panels |

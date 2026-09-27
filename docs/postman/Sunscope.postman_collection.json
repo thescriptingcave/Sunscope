@@ -1,0 +1,545 @@
+{
+  "info": {
+    "name": "Sunscope API",
+    "description": "# Sunscope API\n\nGenerated from `api/openapi.json` by `scripts/gen-postman.py`. Do not edit by hand — the\nnext run overwrites it, and `--check` fails the build if it drifts.\n\n## Using it\n\n1. Import `Sunscope.postman_collection.json`, and `Sunscope.postman_environment.json`\n   alongside it.\n2. Fill in `password` in the environment. `username` defaults to `admin`.\n3. Run **1. Auth → Login** once. Its test script saves the token.\n4. Everything else works.\n\n## Seeing the role boundary\n\nSwitch the environment's `username` to `viewer`, re-run Login, then open **5. Explore**.\nYou get 403. Switch back to `admin` and it returns 200. That one difference is the whole\nrole system — see docs/13-postman.md.\n\n## If a request 401s\n\nThe token expired (8 hours) or Login has not been run in this session. Tokens live in a\ncollection variable, which is memory-only, so re-running Login is the fix. It is always\nsafe to do.\n",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "token",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Auth",
+      "description": "Log in, and see who you are. **Start here** — every other request needs the token this folder produces.",
+      "item": [
+        {
+          "method": "POST",
+          "header": [
+            {
+              "key": "Accept",
+              "value": "application/json"
+            },
+            {
+              "key": "Content-Type",
+              "value": "application/json",
+              "type": "text"
+            }
+          ],
+          "url": {
+            "raw": "{{baseUrl}}/api/auth/login",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "api",
+              "auth",
+              "login"
+            ],
+            "query": []
+          },
+          "description": "Login\n\n**Run this first.** Its test script saves the token to `{{token}}`, which every other request in this collection uses. Without it the rest return 401.\n\nThe collection environment holds two accounts: `admin` (sees everything) and `viewer` (sees everything except Explore). Switch `username`/`password` in the environment, re-run this request, and watch `/api/explore` start returning 403.",
+          "body": {
+            "mode": "raw",
+            "raw": "{\n  \"username\": \"{{username}}\",\n  \"password\": \"{{password}}\"\n}",
+            "options": {
+              "raw": {
+                "language": "json"
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Capture the token so the rest of the collection just works.",
+                  "const body = pm.response.json();",
+                  "if (!body.token) {",
+                  "  console.error('no token in response:', pm.response.text());",
+                  "} else {",
+                  "  pm.collectionVariables.set('token', body.token);",
+                  "  console.log('signed in as', body.role, '- token saved');",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "method": "GET",
+          "header": [
+            {
+              "key": "Accept",
+              "value": "application/json"
+            }
+          ],
+          "url": {
+            "raw": "{{baseUrl}}/api/auth/me",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "api",
+              "auth",
+              "me"
+            ],
+            "query": []
+          },
+          "description": "**Me**\n\nWho am I, and what may I do.\n\nReports the role from the token so a client can adapt without guessing. There is no\n``/api/auth/roles`` endpoint: two roles do not need one.\n\nReports the caller's role. A viewer is a fully supported account, not a degraded one — see `/api/explore` for the one thing it cannot do."
+        }
+      ],
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{token}}",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "2. Telemetry",
+      "description": "What the plant is doing right now, and over a range. Read `/api/meta` first if you want to know which tables and metrics are legal.",
+      "item": [
+        {
+          "method": "GET",
+          "header": [
+            {
+              "key": "Accept",
+              "value": "application/json"
+            }
+          ],
+          "url": {
+            "raw": "{{baseUrl}}/api/events?start=&end=&severity=",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "api",
+              "events"
+            ],
+            "query": [
+              {
+                "key": "start",
+                "value": "",
+                "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty.",
+                "disabled": true
+              },
+              {
+                "key": "end",
+                "value": "",
+                "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty.",
+                "disabled": true
+              },
+              {
+                "key": "severity",
+                "value": "critical",
+                "description": "Filter by severity. Repeat the parameter for several: ?severity=critical&severity=info. One of critical, warning, info.",
+                "disabled": true
+              }
+            ]
+          },
+          "description": "**Events**\n\nRecent alarms, optionally filtered by severity."
+        },
+        {
+          "method": "GET",
+          "header": [
+            {
+              "key": "Accept",
+              "value": "application/json"
+            }
+          ],
+          "url": {
+            "raw": "{{baseUrl}}/api/meta",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "api",
+              "meta"
+            ],
+            "query": []
+          },
+          "description": "**Meta**\n\nAllowlists and capabilities.\n\nExposed so the PWA can build its pickers from the same lists the API\nvalidates against, rather than duplicating them in the frontend where\nthe two could drift.\n\nThe allowlist: every legal `table`, `metric` and `dimension`. Start here."
+        },
+        {
+          "method": "GET",
+          "header": [
+            {
+              "key": "Accept",
+              "value": "application/json"
+            }
+          ],
+          "url": {
+            "raw": "{{baseUrl}}/api/now",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "api",
+              "now"
+            ],
+            "query": []
+          },
+          "description": "**Now**\n\nCurrent state for every inverter, from the in-memory Last Value Cache.\n\nThis is what makes a cold PWA load instant: an in-memory server-side\nstructure rather than an aggregate over hours of Parquet.\n\nServed from the Last Value Cache, so it answers even when InfluxDB is unhappy. That is why the PWA still shows numbers during a database restart. Expect `stale: true` and an old timestamp if the simulator has stopped."
+        },
+        {
+          "method": "GET",
+          "header": [
+            {
+              "key": "Accept",
+              "value": "application/json"
+            }
+          ],
+          "url": {
+            "raw": "{{baseUrl}}/api/series?table=&metric=&start=&end=&interval=&group_by=&limit=",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "api",
+              "series"
+            ],
+            "query": [
+              {
+                "key": "table",
+                "value": "inverter_telemetry",
+                "description": "Source table. GET /api/meta lists the allowed values.",
+                "disabled": false
+              },
+              {
+                "key": "metric",
+                "value": "ac_power_w",
+                "description": "Field to plot. Must be a field OF THE CHOSEN TABLE — 'dc_power_w' is valid on string_telemetry but not on site_rollup. /api/meta gives per-table lists.",
+                "disabled": false
+              },
+              {
+                "key": "start",
+                "value": "",
+                "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty.",
+                "disabled": true
+              },
+              {
+                "key": "end",
+                "value": "",
+                "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty.",
+                "disabled": true
+              },
+              {
+                "key": "interval",
+                "value": "5m",
+                "description": "Bucket width for aggregation. One of 1m, 5m, 15m, 1h, 6h, 1d, raw. 'raw' returns unbucketed points.",
+                "disabled": false
+              },
+              {
+                "key": "group_by",
+                "value": "inverter_id",
+                "description": "Split into one series per value of this dimension. Dimensions are per-table too: inverter_id and block for inverter_telemetry, string_id for string_telemetry.",
+                "disabled": true
+              },
+              {
+                "key": "limit",
+                "value": "",
+                "description": "Maximum points returned, 1-5000. Exceeding it returns the most recent 5000 rather than an error.",
+                "disabled": true
+              }
+            ]
+          },
+          "description": "**Series**\n\nOne metric over time, aggregated into buckets.\n\n``table``, ``metric``, ``interval`` and ``group_by`` are all validated\nagainst allowlists before any SQL is built; ``site`` and the time range\nare bound parameters.\n\nThe workhorse. `table` and `metric` are checked against an allowlist before any SQL is built; an unknown value is a 400 listing what is legal, not a 500.\n\n`GET /api/meta` returns that allowlist, so read it first if you want to explore."
+        },
+        {
+          "method": "GET",
+          "header": [
+            {
+              "key": "Accept",
+              "value": "application/json"
+            }
+          ],
+          "url": {
+            "raw": "{{baseUrl}}/api/strings?start=&end=&min_imbalance=&expected_strings=",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "api",
+              "strings"
+            ],
+            "query": [
+              {
+                "key": "start",
+                "value": "",
+                "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty.",
+                "disabled": true
+              },
+              {
+                "key": "end",
+                "value": "",
+                "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty.",
+                "disabled": true
+              },
+              {
+                "key": "min_imbalance",
+                "value": "",
+                "description": "Only report strings imbalanced by at least this much, as a fraction of the strongest string in the sample. 0.05 is 5%.",
+                "disabled": true
+              },
+              {
+                "key": "expected_strings",
+                "value": "",
+                "description": "Strings per inverter; samples missing any are not scored",
+                "disabled": true
+              }
+            ]
+          },
+          "description": "**Strings**\n\nPer-inverter string spread.\n\nThe fault signature for a degrading string: normal operation sits under\n5 %, and a genuinely bad string exceeds 20 %.\n\nSpreads are measured between strings **at the same timestamp**, so the\nresult is not contaminated by the day/night cycle over the window."
+        },
+        {
+          "method": "GET",
+          "header": [
+            {
+              "key": "Accept",
+              "value": "application/json"
+            }
+          ],
+          "url": {
+            "raw": "{{baseUrl}}/api/summary?start=&end=",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "api",
+              "summary"
+            ],
+            "query": [
+              {
+                "key": "start",
+                "value": "",
+                "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty.",
+                "disabled": true
+              },
+              {
+                "key": "end",
+                "value": "",
+                "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty.",
+                "disabled": true
+              }
+            ]
+          },
+          "description": "**Summary**\n\nFleet summary: latest rollup plus per-inverter aggregates.\n\nSite rollup plus a per-device summary over a range. This is the 'last 24 hours' number, not the instantaneous one — compare with `/api/now` and they should agree close to the present."
+        }
+      ],
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{token}}",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "3. Alerts",
+      "description": "The shipped rules, the live state of the engine, and what has fired recently.",
+      "item": [
+        {
+          "method": "GET",
+          "header": [
+            {
+              "key": "Accept",
+              "value": "application/json"
+            }
+          ],
+          "url": {
+            "raw": "{{baseUrl}}/api/alert-rules",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "api",
+              "alert-rules"
+            ],
+            "query": []
+          },
+          "description": "**Alert Rules**\n\nThe loaded rule set.\n\nExposed so the dashboard can show what is being watched for, and so an\noperator can confirm a threshold change took effect without restarting\nanything."
+        },
+        {
+          "method": "GET",
+          "header": [
+            {
+              "key": "Accept",
+              "value": "application/json"
+            }
+          ],
+          "url": {
+            "raw": "{{baseUrl}}/api/alert-stats",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "api",
+              "alert-stats"
+            ],
+            "query": []
+          },
+          "description": "**Alert Stats**\n\nEngine counters, for the health strip.\n\n``errors`` is the number worth watching: a rising count means the engine\nis running but something in the loop is failing, which is a different\nproblem from ``engine_connected`` being false and much easier to miss."
+        },
+        {
+          "method": "GET",
+          "header": [
+            {
+              "key": "Accept",
+              "value": "application/json"
+            }
+          ],
+          "url": {
+            "raw": "{{baseUrl}}/api/alerts?severity=&subject=&include_resolved=",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "api",
+              "alerts"
+            ],
+            "query": [
+              {
+                "key": "severity",
+                "value": "critical",
+                "description": "Filter by severity. Repeat the parameter for several: ?severity=critical&severity=warning. One of critical, warning, info.",
+                "disabled": true
+              },
+              {
+                "key": "subject",
+                "value": "",
+                "description": "Filter to one asset. The site itself is 'mojave'; inverters are 'INV-01'..'INV-04'.",
+                "disabled": true
+              },
+              {
+                "key": "include_resolved",
+                "value": "",
+                "description": "Include alerts that have since resolved. Default false, so this is the currently-firing set only.",
+                "disabled": true
+              }
+            ]
+          },
+          "description": "Alerts the engine is currently holding, in memory.\n\nDistinct from ``/api/events``, which is the historical record read back\nfrom InfluxDB. This is the live view: it reflects state the engine holds\nright now, including alerts that have not yet been flushed to storage,\nand it stays correct when the database is unreachable.\n\nThat distinction matters most for the staleness rules, whose entire\npurpose is to notice that data has stopped. If reading the feed required\na successful database round trip, the alert about the database being\nunreachable could not be displayed."
+        }
+      ],
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{token}}",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "4. Live feed",
+      "description": "The WebSocket ticket path. This is where the PWA's live data comes from.",
+      "item": [
+        {
+          "method": "POST",
+          "header": [
+            {
+              "key": "Accept",
+              "value": "application/json"
+            }
+          ],
+          "url": {
+            "raw": "{{baseUrl}}/api/live-ticket",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "api",
+              "live-ticket"
+            ],
+            "query": []
+          },
+          "description": "**Live Ticket**\n\nMint a single-use ticket for `GET /api/live`.\n\nA browser cannot send an Authorization header on a WebSocket handshake.\nPutting the JWT in the query string is the usual workaround and it leaks\nthe credential into access logs, proxy logs and history. This hands out a\n30-second, one-shot token instead, so the long-lived credential never\nleaves a header.\n\nHands back a **single-use, 30-second** ticket for the WebSocket. The long-lived JWT cannot go in a URL: a handshake carries no Authorization header, and a token in a query string ends up in access logs, proxy logs and browser history.\n\nPostman cannot drive a WebSocket from a test script, so use the ticket at `ws://127.0.0.1:8000{{path}}?ticket=...` in a WebSocket client."
+        }
+      ],
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{token}}",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "5. Explore (admin only)",
+      "description": "Arbitrary read-only SQL against the database. A viewer gets 403 — that is the RBAC boundary working, not a fault.",
+      "item": [
+        {
+          "method": "GET",
+          "header": [
+            {
+              "key": "Accept",
+              "value": "application/json"
+            }
+          ],
+          "url": {
+            "raw": "{{baseUrl}}/api/explore?sql=&params=",
+            "host": [
+              "{{baseUrl}}"
+            ],
+            "path": [
+              "api",
+              "explore"
+            ],
+            "query": [
+              {
+                "key": "sql",
+                "value": "SELECT time, total_ac_power_w, pr_ratio FROM site_rollup ORDER BY time DESC LIMIT 10",
+                "description": "A single read-only SQL statement. Bind user input with $name and pass values via the `params` argument — never concatenate them into the string. Requires the admin role (a viewer gets 403) and a loopback client.",
+                "disabled": false
+              },
+              {
+                "key": "params",
+                "value": "",
+                "description": "JSON object of $name bindings, e.g. {\"site\":\"mojave\"}",
+                "disabled": true
+              }
+            ]
+          },
+          "description": "Run read-only SQL.\n\nReplaces the Grafana/Explorer role: a query surface over the same data,\nwithout the gRPC dependency that blocked both.\n\nBindings are accepted as a JSON object in ``params`` and travel to\nInfluxDB as a separate field, never spliced into the SQL text. Without\nthem an exploration tool could only run queries with literals inlined,\nwhich is both tedious and the exact practice the parameter binding exists\nto avoid -- so the endpoint could not demonstrate, or be used with, the\none mechanism that makes ad-hoc SQL safe.\n\nThe guard is a deny-list, which is weaker than an allow-list. That is a\ndisclosed trade, made necessary because InfluxDB 3 Core has no\nread-only tokens, so this endpoint holds an admin token.\n\n\"Local\" has to mean more than literal loopback. The port is published on\nthe host's 127.0.0.1 only, but Docker rewrites the source address when it\nforwards, so the API sees the caller as the bridge gateway -- 172.22.0.1\nin this stack -- and a check against (\"127.0.0.1\", \"::1\") rejects every\nreal request. That made this endpoint, the documented replacement for\nGrafana's Explorer, unusable in practice, while the test suite passed\nbecause TestClient pins the peer to 127.0.0.1 and never reproduced the\ndeployment's actual network path.\n\nThat reasoning is sound, but the first fix over-corrected: it allowed all of\nRFC 1918, so \"a private address\" quietly became \"anyone on the LAN\" the moment\nthe API was bound to 0.0.0.0. What it is now is loopback, link-local, and this\ncontainer's own bridge gateway -- one address, not a range. See\n``_is_local_address``.\n\nTwo independent controls apply here, and both are required. **Role** (admin\nonly, because this endpoint runs SQL with an admin-scoped InfluxDB token)\ndecides *who*. **Locality** decides *from where*. Neither substitutes for the\nother: a viewer on the host is still refused, and an admin on the LAN is still\nrefused.\n\nStrengthen both before exposing this anywhere.\n\n**Admin only.** A viewer gets `403 {\"detail\": \"role 'viewer' may not sql:raw\"}` — that is the RBAC boundary working, not a bug.\n\nTwo more limits, both deliberate: read-only SQL only, and loopback callers only. Bindings go in the `params` field as a JSON object and travel separately from the SQL text, so you can parameterise without concatenating."
+        }
+      ],
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{token}}",
+            "type": "string"
+          }
+        ]
+      }
+    }
+  ]
+}

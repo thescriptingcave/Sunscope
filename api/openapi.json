@@ -1,0 +1,964 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Sunscope API",
+    "description": "Read-only API over the solar farm telemetry in InfluxDB 3.",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Login",
+        "operationId": "login_api_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Me",
+        "description": "Who am I, and what may I do.\n\nReports the role from the token so a client can adapt without guessing. There is no\n``/api/auth/roles`` endpoint: two roles do not need one.",
+        "operationId": "me_api_auth_me_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Me Api Auth Me Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/now": {
+      "get": {
+        "tags": [
+          "telemetry"
+        ],
+        "summary": "Now",
+        "description": "Current state for every inverter, from the in-memory Last Value Cache.\n\nThis is what makes a cold PWA load instant: an in-memory server-side\nstructure rather than an aggregate over hours of Parquet.",
+        "operationId": "now_api_now_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Now Api Now Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/summary": {
+      "get": {
+        "tags": [
+          "telemetry"
+        ],
+        "summary": "Summary",
+        "description": "Fleet summary: latest rollup plus per-inverter aggregates.",
+        "operationId": "summary_api_summary_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty.",
+              "title": "Start"
+            },
+            "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty."
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty.",
+              "title": "End"
+            },
+            "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Summary Api Summary Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/series": {
+      "get": {
+        "tags": [
+          "telemetry"
+        ],
+        "summary": "Series",
+        "description": "One metric over time, aggregated into buckets.\n\n``table``, ``metric``, ``interval`` and ``group_by`` are all validated\nagainst allowlists before any SQL is built; ``site`` and the time range\nare bound parameters.",
+        "operationId": "series_api_series_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "table",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Source table. GET /api/meta lists the allowed values.",
+              "examples": [
+                "inverter_telemetry"
+              ],
+              "default": "inverter_telemetry",
+              "title": "Table"
+            },
+            "description": "Source table. GET /api/meta lists the allowed values."
+          },
+          {
+            "name": "metric",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Field to plot. Must be a field OF THE CHOSEN TABLE — 'dc_power_w' is valid on string_telemetry but not on site_rollup. /api/meta gives per-table lists.",
+              "examples": [
+                "ac_power_w"
+              ],
+              "default": "ac_power_w",
+              "title": "Metric"
+            },
+            "description": "Field to plot. Must be a field OF THE CHOSEN TABLE — 'dc_power_w' is valid on string_telemetry but not on site_rollup. /api/meta gives per-table lists."
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty.",
+              "title": "Start"
+            },
+            "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty."
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty.",
+              "title": "End"
+            },
+            "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty."
+          },
+          {
+            "name": "interval",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Bucket width for aggregation. One of 1m, 5m, 15m, 1h, 6h, 1d, raw. 'raw' returns unbucketed points.",
+              "examples": [
+                "5m"
+              ],
+              "default": "5m",
+              "title": "Interval"
+            },
+            "description": "Bucket width for aggregation. One of 1m, 5m, 15m, 1h, 6h, 1d, raw. 'raw' returns unbucketed points."
+          },
+          {
+            "name": "group_by",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Split into one series per value of this dimension. Dimensions are per-table too: inverter_id and block for inverter_telemetry, string_id for string_telemetry.",
+              "examples": [
+                "inverter_id"
+              ],
+              "title": "Group By"
+            },
+            "description": "Split into one series per value of this dimension. Dimensions are per-table too: inverter_id and block for inverter_telemetry, string_id for string_telemetry."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 5000,
+              "minimum": 1,
+              "description": "Maximum points returned, 1-5000. Exceeding it returns the most recent 5000 rather than an error.",
+              "default": 5000,
+              "title": "Limit"
+            },
+            "description": "Maximum points returned, 1-5000. Exceeding it returns the most recent 5000 rather than an error."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Series Api Series Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/strings": {
+      "get": {
+        "tags": [
+          "telemetry"
+        ],
+        "summary": "Strings",
+        "description": "Per-inverter string spread.\n\nThe fault signature for a degrading string: normal operation sits under\n5 %, and a genuinely bad string exceeds 20 %.\n\nSpreads are measured between strings **at the same timestamp**, so the\nresult is not contaminated by the day/night cycle over the window.",
+        "operationId": "strings_api_strings_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty.",
+              "title": "Start"
+            },
+            "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty."
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty.",
+              "title": "End"
+            },
+            "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty."
+          },
+          {
+            "name": "min_imbalance",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "description": "Only report strings imbalanced by at least this much, as a fraction of the strongest string in the sample. 0.05 is 5%.",
+              "examples": [
+                0.05
+              ],
+              "default": 0.0,
+              "title": "Min Imbalance"
+            },
+            "description": "Only report strings imbalanced by at least this much, as a fraction of the strongest string in the sample. 0.05 is 5%."
+          },
+          {
+            "name": "expected_strings",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 12,
+              "minimum": 1,
+              "description": "Strings per inverter; samples missing any are not scored",
+              "default": 3,
+              "title": "Expected Strings"
+            },
+            "description": "Strings per inverter; samples missing any are not scored"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Strings Api Strings Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/events": {
+      "get": {
+        "tags": [
+          "telemetry"
+        ],
+        "summary": "Events",
+        "description": "Recent alarms, optionally filtered by severity.",
+        "operationId": "events_api_events_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty.",
+              "title": "Start"
+            },
+            "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty."
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty.",
+              "title": "End"
+            },
+            "description": "RFC 3339 timestamp, e.g. 2026-09-25T19:30:00Z. Omit both to get the last 24 hours. Note the simulator publishes its own timestamps, which do not track wall-clock time, so a recent-looking range can come back empty."
+          },
+          {
+            "name": "severity",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by severity. Repeat the parameter for several: ?severity=critical&severity=info. One of critical, warning, info.",
+              "examples": [
+                [
+                  "critical"
+                ]
+              ],
+              "title": "Severity"
+            },
+            "description": "Filter by severity. Repeat the parameter for several: ?severity=critical&severity=info. One of critical, warning, info."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Events Api Events Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/alerts": {
+      "get": {
+        "tags": [
+          "alerting"
+        ],
+        "summary": "Alerts",
+        "description": "Alerts the engine is currently holding, in memory.\n\nDistinct from ``/api/events``, which is the historical record read back\nfrom InfluxDB. This is the live view: it reflects state the engine holds\nright now, including alerts that have not yet been flushed to storage,\nand it stays correct when the database is unreachable.\n\nThat distinction matters most for the staleness rules, whose entire\npurpose is to notice that data has stopped. If reading the feed required\na successful database round trip, the alert about the database being\nunreachable could not be displayed.",
+        "operationId": "alerts_api_alerts_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "severity",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by severity. Repeat the parameter for several: ?severity=critical&severity=warning. One of critical, warning, info.",
+              "examples": [
+                [
+                  "critical"
+                ]
+              ],
+              "title": "Severity"
+            },
+            "description": "Filter by severity. Repeat the parameter for several: ?severity=critical&severity=warning. One of critical, warning, info."
+          },
+          {
+            "name": "subject",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one asset. The site itself is 'mojave'; inverters are 'INV-01'..'INV-04'.",
+              "examples": [
+                "INV-02"
+              ],
+              "title": "Subject"
+            },
+            "description": "Filter to one asset. The site itself is 'mojave'; inverters are 'INV-01'..'INV-04'."
+          },
+          {
+            "name": "include_resolved",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Include alerts that have since resolved. Default false, so this is the currently-firing set only.",
+              "default": false,
+              "title": "Include Resolved"
+            },
+            "description": "Include alerts that have since resolved. Default false, so this is the currently-firing set only."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Alerts Api Alerts Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/alert-rules": {
+      "get": {
+        "tags": [
+          "alerting"
+        ],
+        "summary": "Alert Rules",
+        "description": "The loaded rule set.\n\nExposed so the dashboard can show what is being watched for, and so an\noperator can confirm a threshold change took effect without restarting\nanything.",
+        "operationId": "alert_rules_api_alert_rules_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Alert Rules Api Alert Rules Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/alert-stats": {
+      "get": {
+        "tags": [
+          "alerting"
+        ],
+        "summary": "Alert Stats",
+        "description": "Engine counters, for the health strip.\n\n``errors`` is the number worth watching: a rising count means the engine\nis running but something in the loop is failing, which is a different\nproblem from ``engine_connected`` being false and much easier to miss.",
+        "operationId": "alert_stats_api_alert_stats_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Alert Stats Api Alert Stats Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/explore": {
+      "get": {
+        "tags": [
+          "explore"
+        ],
+        "summary": "Explore",
+        "description": "Run read-only SQL.\n\nReplaces the Grafana/Explorer role: a query surface over the same data,\nwithout the gRPC dependency that blocked both.\n\nBindings are accepted as a JSON object in ``params`` and travel to\nInfluxDB as a separate field, never spliced into the SQL text. Without\nthem an exploration tool could only run queries with literals inlined,\nwhich is both tedious and the exact practice the parameter binding exists\nto avoid -- so the endpoint could not demonstrate, or be used with, the\none mechanism that makes ad-hoc SQL safe.\n\nThe guard is a deny-list, which is weaker than an allow-list. That is a\ndisclosed trade, made necessary because InfluxDB 3 Core has no\nread-only tokens, so this endpoint holds an admin token.\n\n\"Local\" has to mean more than literal loopback. The port is published on\nthe host's 127.0.0.1 only, but Docker rewrites the source address when it\nforwards, so the API sees the caller as the bridge gateway -- 172.22.0.1\nin this stack -- and a check against (\"127.0.0.1\", \"::1\") rejects every\nreal request. That made this endpoint, the documented replacement for\nGrafana's Explorer, unusable in practice, while the test suite passed\nbecause TestClient pins the peer to 127.0.0.1 and never reproduced the\ndeployment's actual network path.\n\nThat reasoning is sound, but the first fix over-corrected: it allowed all of\nRFC 1918, so \"a private address\" quietly became \"anyone on the LAN\" the moment\nthe API was bound to 0.0.0.0. What it is now is loopback, link-local, and this\ncontainer's own bridge gateway -- one address, not a range. See\n``_is_local_address``.\n\nTwo independent controls apply here, and both are required. **Role** (admin\nonly, because this endpoint runs SQL with an admin-scoped InfluxDB token)\ndecides *who*. **Locality** decides *from where*. Neither substitutes for the\nother: a viewer on the host is still refused, and an admin on the LAN is still\nrefused.\n\nStrengthen both before exposing this anywhere.",
+        "operationId": "explore_api_explore_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sql",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4000,
+              "description": "A single read-only SQL statement. Bind user input with $name and pass values via the `params` argument — never concatenate them into the string. Requires the admin role (a viewer gets 403) and a loopback client.",
+              "examples": [
+                "SELECT * FROM site_rollup ORDER BY time DESC LIMIT 5"
+              ],
+              "title": "Sql"
+            },
+            "description": "A single read-only SQL statement. Bind user input with $name and pass values via the `params` argument — never concatenate them into the string. Requires the admin role (a viewer gets 403) and a loopback client."
+          },
+          {
+            "name": "params",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "JSON object of $name bindings, e.g. {\"site\":\"mojave\"}",
+              "title": "Params"
+            },
+            "description": "JSON object of $name bindings, e.g. {\"site\":\"mojave\"}"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Explore Api Explore Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/live-ticket": {
+      "post": {
+        "tags": [
+          "live"
+        ],
+        "summary": "Live Ticket",
+        "description": "Mint a single-use ticket for `GET /api/live`.\n\nA browser cannot send an Authorization header on a WebSocket handshake.\nPutting the JWT in the query string is the usual workaround and it leaks\nthe credential into access logs, proxy logs and history. This hands out a\n30-second, one-shot token instead, so the long-lived credential never\nleaves a header.",
+        "operationId": "live_ticket_api_live_ticket_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Live Ticket Api Live Ticket Post"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/meta": {
+      "get": {
+        "tags": [
+          "telemetry"
+        ],
+        "summary": "Meta",
+        "description": "Allowlists and capabilities.\n\nExposed so the PWA can build its pickers from the same lists the API\nvalidates against, rather than duplicating them in the frontend where\nthe two could drift.",
+        "operationId": "meta_api_meta_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Meta Api Meta Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "LoginRequest": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "maxLength": 128,
+            "title": "Username"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 256,
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "LoginRequest"
+      },
+      "TokenResponse": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "title": "Token"
+          },
+          "token_type": {
+            "type": "string",
+            "title": "Token Type",
+            "default": "bearer"
+          },
+          "expires_in": {
+            "type": "integer",
+            "title": "Expires In"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role",
+            "default": "viewer"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token",
+          "expires_in"
+        ],
+        "title": "TokenResponse"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8000",
+      "description": "Local stack"
+    }
+  ]
+}
