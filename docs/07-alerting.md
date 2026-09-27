@@ -244,6 +244,35 @@ To see the whole system react, run the simulator's fault scenarios:
 cd sim && uv run solar-sim --scenarios config/scenarios/demo.yaml
 ```
 
+## 8a. Why the staleness rules fire so often on a laptop
+
+Worth recording, because it looks alarming and is entirely correct.
+
+Running the simulator on a Mac, the `telemetry_stale` and `site_rollup_stale` rules fire
+routinely -- 205 alerts on a single day. **The simulator is not faulting. The machine is
+sleeping.** macOS suspends every process, so the simulator stops publishing entirely, and a
+staleness rule is doing precisely its job.
+
+Measured against `pmset -g log`, **9 of 9** simulator gaps longer than 10 minutes began within
+0.4–3.9 minutes of the Mac entering sleep. The largest was 91.5 minutes, matching a sleep that
+started 24 seconds after the previous publish. Across those gaps the simulated clock advanced
+exactly one 5-minute tick, and the simulator's PID never changed -- so the process was alive and
+suspended, not crashed and restarted.
+
+So the symptom is a property of the host, not the system under test. Three consequences:
+
+- **The alerting is doing its job.** A device that stops reporting must alert, and a sleeping
+  laptop is a device that stopped reporting.
+- **A 1 MWac farm does not produce 2.4 MW.** At solar noon the four inverters are each at their
+  250 kW rating, which is why `clipping_sustained` fires and why the events table fills with
+  `CLIPPING`. The DC/AC ratio is 1.19 precisely so this happens on hot clear days.
+- **Do not leave it running overnight** and then judge the alert feed. 205 alerts accumulate
+  overnight because the laptop sleeps, and the resolutions pile up behind them. Every one
+  resolved.
+
+If you want a genuinely continuous run, the simulator needs to be somewhere that does not sleep
+-- a container host, a VM, or `caffeinate` locally.
+
 ## 9. Not implemented: Web Push
 
 [Architecture §2.6](./02-architecture.md) originally scoped this component to
