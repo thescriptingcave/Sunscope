@@ -36,6 +36,22 @@ const DASHBOARDS = [
  * <section>, and the title is recoverable from the attribute. Matching on a
  * fixed string is brittle; matching the prefix is not.
  */
+// Panels whose emptiness is a legitimate state rather than a defect.
+//
+// An explicit list, matched by exact title, and not a heuristic. Two reasons for that. A
+// heuristic ("anything mentioning events") silently exempts the next panel someone adds
+// with "events" in the title, including one that is genuinely broken. And a bare skip
+// would be invisible: a reader seeing all-green would assume the panel was checked.
+//
+// The distinction being drawn: a *query error* is always a defect, for every panel, and
+// stays a failure here. Only "no rows" is exempted, and only for a panel whose subject
+// genuinely may not occur. An event log for a healthy plant with no faults in the window
+// is supposed to be empty, and CI hit exactly that: a fresh database whose 24 h backfill
+// happened to contain no fault events, so the panel was correct and the check failed.
+const MAY_BE_EMPTY = new Set([
+  'Events by severity and source (CTE)',
+]);
+
 const PANEL = 'section[data-testid^="data-testid Panel header"]'
 
 /** The variable control's testid also carries the label, so match the prefix. */
@@ -124,7 +140,7 @@ async function main() {
         .filter((p) => p.error)
         .forEach((p) => problems.push(`"${p.title}" shows a query error`))
       inspected
-        .filter((p) => p.noData)
+        .filter((p) => p.noData && !MAY_BE_EMPTY.has(p.title))
         .forEach((p) => problems.push(`"${p.title}" is empty`))
       if (!heading.includes(dash.title)) problems.push(`title is "${heading}"`)
 
@@ -169,7 +185,12 @@ async function main() {
           // The panel header contributes the title to textContent; drop it so
           // the reported value is the value.
           const value = p.body.replace(p.title, '').replace(/\s+/g, ' ').trim().slice(0, 28)
-          const state = p.marks ? 'drawn' : p.body ? `value ${value || '(empty)'}` : 'NOTHING DRAWN'
+          let state = p.marks ? 'drawn' : p.body ? `value ${value || '(empty)'}` : 'NOTHING DRAWN'
+          // Say so when a panel was exempted, rather than letting "drawn" or an empty value
+          // read as though the no-data assertion had been applied and passed. Someone
+          // reading a green run should be able to see exactly which panels were not held
+          // to that bar.
+          if (p.noData && MAY_BE_EMPTY.has(p.title)) state += '  (may be empty; not asserted)'
           console.log(`          · ${p.title.slice(0, 50).padEnd(52)} ${state}`)
         })
       }

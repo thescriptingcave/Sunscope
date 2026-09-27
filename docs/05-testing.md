@@ -305,7 +305,7 @@ the rendered DOM:
 | Check | Script | Asserts |
 |---|---|---|
 | PWA | `scripts/browser/check-ui.js` | Login renders; live feed connects; KPI tiles, inverter cards, chart series and string cells are present; **no console errors and no failed requests**; desktop and 375 px phone viewports |
-| Grafana | `scripts/browser/check-grafana.js` | Both dashboards render; no panel shows a query error; no panel is empty; the `$inverter` template variable expands to the full fleet |
+| Grafana | `scripts/browser/check-grafana.js` | Both dashboards render; no panel shows a query error; no panel is empty (see below for the one exemption); the `$inverter` template variable expands to the full fleet |
 
 Both exit non-zero on failure and both run in `bootstrap.sh test` and in CI.
 
@@ -352,7 +352,35 @@ Two details that are easy to get wrong and fail *silently*:
 - The wait requires `N > 0`. Zero inverters online would be a legitimate fleet-wide outage,
   which is a different failure and should be reported as one.
 
-### 6.2 The PWA check logs what it fetched
+### 6.2 One Grafana panel is allowed to be empty
+
+`check-grafana.js` fails any panel that renders "no data", because a query that executes
+and returns nothing is exactly the failure mode this check exists to catch. That rule is
+right for almost every panel and wrong for one: **"Events by severity and source (CTE)"**
+reads the event log, and an event log for a healthy plant with no faults in the window is
+*supposed* to be empty. CI hit exactly that — a fresh database whose 24 h backfill happened
+to contain no fault events, so the panel was correct and the check failed.
+
+It is an explicit list of exact panel titles, not a heuristic, and the distinction it draws
+is narrow:
+
+| | Exempt panel | Every other panel |
+|---|---|---|
+| Shows a **query error** | **fails** | fails |
+| Shows **no data** | not asserted | fails |
+
+An error is a defect for every panel, exempt or not. Only "no rows" is waived. Matching on
+title rather than on a keyword is deliberate: a heuristic would silently exempt the next
+panel someone adds with "events" in its name, including one that is genuinely broken.
+
+The exemption is printed in the check's output (`drawn (may be empty; not asserted)`), so a
+green run never implies a panel was held to the no-data bar when it was not. A bare skip
+would be invisible, and an invisible skip is worse than no exemption at all.
+
+This is the same shape of mistake as the site-power tile in §6.1: an assertion on a quantity
+whose value is legitimately "nothing" at some times. Two so far, in two different checks.
+
+### 6.3 The PWA check logs what it fetched
 
 Each `/api` response is logged with its status and shape:
 
