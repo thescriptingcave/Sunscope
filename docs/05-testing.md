@@ -267,7 +267,7 @@ should prove, not just that it parses.
 
 ## 5.3 Authentication and roles
 
-`api/tests/test_users.py` (25 tests) and `api/tests/test_rbac.py` (9 tests). These are
+`api/tests/test_users.py` (26 tests) and `api/tests/test_rbac.py` (9 tests). These are
 small and they are the most important tests in the API, because the thing they protect is
 the only one where a single mistake hands over the database.
 
@@ -445,7 +445,7 @@ against an independent reference separates "the sky is hazy" from "the sensor is
 
 ## 9. Verification scripts
 
-Six checks that are neither unit tests nor browser tests. Each one catches a class of failure
+Eight checks that are neither unit tests nor browser tests. Each one catches a class of failure
 the other suites structurally cannot, and each is a hard gate in `bootstrap.sh test`.
 
 | Script | Asserts | Why the rest cannot |
@@ -453,6 +453,8 @@ the other suites structurally cannot, and each is a hard gate in `bootstrap.sh t
 | `check-pwa-contract.py` | Every endpoint the PWA calls, called exactly as the browser calls it, with the real JWT flow | A contract drift between two codebases that each pass their own tests |
 | `check-doc-sql.py` | Every ```` ```sql ```` block in **every** document executes | Docs are not compiled, so nothing else notices a query that stopped working |
 | `check-live-ws.py` | EMQX's WebSocket listener carries real MQTT frames | Telegraf uses plain TCP on 1883, so no other component exercises the listener |
+| `check-exposure.py` | Nothing is reachable off-loopback, and the security model holds; `--test` additionally starts a throwaway instance and probes it from a real LAN address | Every other test connects over loopback, which is exactly where the original raw-SQL guard was wrong — see [04-security §4.4a](04-security.md) |
+| `gen-postman.py --check` | The Postman collection matches the live OpenAPI schema | A request for an endpoint that no longer exists is still a *valid* Postman request, so nothing complains until a reader runs it and gets a 404 |
 | `export-sql.py --check` | `docs/sql/*.sql` matches the document it was generated from | Generated files drift silently |
 | `export-sql.py --verify` | All 40 documented statements execute against the live database | See §5.2 |
 | `backup.py` round-trip | A backup restores into a scratch database with matching row counts | A backup that cannot be restored is not a backup |

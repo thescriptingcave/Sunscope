@@ -19,6 +19,7 @@ Sunscope: a physics-based solar farm simulator with a real-time web and mobile d
 | 9 | [Glossary](./11-glossary.md) | Every term defined once: PV physics, telemetry, alerting, and the traps |
 | 10 | [Dashboards](./12-dashboards.md) | Panel-by-panel tour of both Grafana dashboards and the PWA |
 | 11 | [Postman](./13-postman.md) | Drive the whole API from Postman, and watch the role boundary from the inside |
+| — | [Grafana + InfluxDB notes](./grafana-influxdb-notes.md) | Datasource gotchas: Flight SQL, tokens, and the queries Grafana cannot run |
 
 ## Canonical identifiers
 
