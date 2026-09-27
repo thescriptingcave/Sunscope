@@ -198,6 +198,48 @@ not a config tweak.
 > ANSI colour codes. `scripts/influx-init.sh` does this, then verifies the new token works
 > before it continues.
 
+### 4.4a The raw-SQL guard was a vulnerability, found by testing off-loopback
+
+**Everything in this project had only ever been exercised on `127.0.0.1`, and that hid a
+real vulnerability.** `scripts/check-exposure.py` probes the API from a real non-loopback
+address, and it found this on first run.
+
+`/api/explore` runs arbitrary read-only SQL. The guard deciding who may use it,
+`_is_local_address()`, allowed **all of RFC 1918** — `10.0.0.0/8`, `172.16.0.0/12` and
+`192.168.0.0/16` — on the reasoning that Docker rewrites the source address of anything
+arriving through a published port to the bridge gateway (`172.22.0.1`), so a loopback-only
+check rejected every real request. That reasoning was sound and the implementation was not:
+"a private address" is not "this host". The moment the API is bound to `0.0.0.0`, or placed
+behind a reverse proxy on a private network, **every client on the LAN qualifies.**
+
+The consequence, given §4.4 — that InfluxDB 3 Core has no permission-scoped tokens, so this
+endpoint holds an **admin** token — is arbitrary SQL against the whole database, for anyone on
+the network. The unit tests could not have caught it: `TestClient` pins the peer to
+`127.0.0.1`, and the deployment's real path arrives as the bridge gateway, so neither
+reproduced a remote client.
+
+The fix narrows the allowance to the three things that genuinely are local:
+
+| Allowed | Why |
+|---|---|
+| loopback (`127.0.0.0/8`, `::1`) | a direct request from this host |
+| link-local (`169.254.0.0/16`, `fe80::/10`) | a same-host link |
+| **this container's own default-route gateway** | the one address Docker substitutes for the host. Discovered from `/proc/net/route` at startup, so it is a single address rather than a range |
+
+Everything else is refused, including sibling containers, other hosts in the same Docker
+subnet, and the host's own LAN address. If the gateway cannot be discovered the endpoint is
+reachable only from true loopback — stricter, not looser. `API_LOCAL_NETWORKS` re-widens this
+deliberately, for someone who has thought about it.
+
+Two tests encoded the old behaviour as correct and were rewritten rather than deleted,
+because "it used to assert the vulnerable thing" is the useful record:
+`test_local_address_predicate_covers_docker_bridge` and
+`test_explore_rejects_a_bridge_address_under_the_old_rule`.
+
+**The general lesson, and it is the reason `make exposure` exists:** a security guard that
+infers locality from a source address has never been tested until it is probed from an address
+that is neither loopback nor the one you expected.
+
 ### 4.5 SQL injection prevention (addresses T3)
 
 InfluxDB 3 Core supports `$name` parameters, but with two sharp restrictions that are easy to

@@ -495,15 +495,21 @@ def test_local_address_predicate_covers_docker_bridge():
     """
     from solar_api.main import _is_local_address
 
-    # Must accept: loopback, the Docker bridge, and sibling containers.
-    for host in ("127.0.0.1", "::1", "172.22.0.1", "172.17.0.2", "192.168.1.5",
-                 "10.0.0.3", "169.254.1.1", None):
+    # Must accept: loopback, link-local, and this container's own bridge gateway.
+    for host in ("127.0.0.1", "::1", "169.254.1.1", None):
         assert _is_local_address(host) is True, host
 
     # Must refuse: anything routable, and hostnames that are not provably local.
     for host in ("8.8.8.8", "203.0.113.9", "198.51.100.1", "192.0.2.1",
                  "224.0.0.1", "example.com", "not-an-ip"):
         assert _is_local_address(host) is False, host
+
+    # Sibling containers and LAN hosts are NOT local. They used to be accepted, which is
+    # the vulnerability: every private address was treated as this machine, so any client
+    # on the network got raw SQL with an admin-scoped token. Only the one gateway address
+    # Docker substitutes for the host is allowed, and that is discovered at runtime.
+    for host in ("172.17.0.2", "192.168.1.5", "10.0.0.3", "172.22.0.9"):
+        assert _is_local_address(host) is False, f"{host} is a remote client, not this host"
 
 
 def test_documentation_ranges_are_not_treated_as_local():
@@ -520,13 +526,86 @@ def test_documentation_ranges_are_not_treated_as_local():
     assert _is_local_address("192.0.2.1") is False
 
 
-def test_explore_rejects_a_bridge_address_under_the_old_rule():
-    """Pins the exact string the API logs, so the fix cannot silently regress."""
-    from solar_api.main import _is_local_address
+def test_explore_allows_this_containers_bridge_gateway_and_nothing_else():
+    """The raw-SQL guard, stated as a property rather than a hardcoded address.
 
-    # This is the address uvicorn recorded for a request made from the host.
-    assert "172.22.0.1" not in ("127.0.0.1", "::1")
-    assert _is_local_address("172.22.0.1") is True
+    This test used to assert that ``172.22.0.1`` was accepted, which is how the
+    vulnerability got in: allowing the bridge gateway is necessary, because Docker rewrites
+    the source address of anything arriving through a published port, and a loopback-only
+    check rejected every real request. But the fix over-reached to all of RFC 1918, so any
+    client on the LAN was treated as local and granted raw SQL with an admin-scoped token.
+    ``scripts/check-exposure.py --test`` found it by probing from a real LAN address.
+
+    So the property is now narrow and specific:
+
+    * loopback and link-local are local;
+    * **this container's own default-route gateway** is local, because that is the one
+      address Docker substitutes for the host;
+    * no other private address is local, however plausible it looks.
+
+    Discovered rather than hardcoded, so the test still holds if Docker picks a different
+    subnet -- which is exactly what made the old assertion brittle.
+    """
+    from solar_api.main import _BRIDGE_GATEWAY, _is_local_address
+
+    # Local, unambiguously.
+    assert _is_local_address("127.0.0.1") is True
+    assert _is_local_address("::1") is True
+    assert _is_local_address("169.254.1.1") is True
+
+    # The bridge gateway is discovered, not assumed. On the host running the tests it is
+    # not in a container, so there is no /proc/net/route default route to find and the
+    # allowance is simply absent -- which is the stricter direction.
+    if _BRIDGE_GATEWAY is not None:
+        assert _is_local_address(str(_BRIDGE_GATEWAY)) is True
+    else:
+        assert _is_local_address("172.22.0.1") is False, (
+            "with no discoverable bridge gateway the allowance must be absent"
+        )
+
+    # NOT local. This is the vulnerability: every one of these was accepted before.
+    for address in (
+        "10.0.0.198",       # this host's own LAN address
+        "172.17.0.5",       # a Docker bridge that is not ours
+        "172.22.0.9",       # our subnet, different host
+        "192.168.1.50",     # a home or office LAN
+        "8.8.8.8",          # routable
+        "not-an-ip",
+    ):
+        assert _is_local_address(address) is False, f"{address} must not be treated as local"
+
+
+def test_explore_rejects_a_request_from_a_non_local_address(monkeypatch):
+    """End to end: a 403 for a private client that is not the bridge gateway.
+
+    Rebuilds the app rather than reusing the ``client`` fixture, because the peer address is
+    fixed when the TestClient is constructed and the shared fixture pins it to loopback.
+    This is the only test that exercises the guard against a non-loopback peer at the
+    endpoint level; ``scripts/check-exposure.py --test`` does it against a real socket.
+    """
+    from test_api import StubInflux, auth, login
+
+    from solar_api.config import Settings
+    from solar_api.config import get_settings as real_get_settings
+    from solar_api.main import create_app
+
+    monkeypatch.setenv("ALERTS_ENABLED", "false")
+    real_get_settings.cache_clear()
+    app = create_app()
+    app.dependency_overrides[real_get_settings] = lambda: Settings(
+        INFLUX_API_TOKEN="test-token",
+        API_SECRET_KEY="test-secret-key-long-enough-for-hmac-sha256-0123456789",
+        API_ADMIN_PASSWORD="correct-password",
+        API_ADMIN_USERNAME="admin",
+        ALERTS_ENABLED="false",
+    )
+    app.dependency_overrides[mainmod._client] = lambda: StubInflux()
+
+    with TestClient(app, client=("10.0.0.198", 51234)) as client:
+        token = login(client)
+        response = client.get("/api/explore", params={"sql": "SELECT 1"}, headers=auth(token))
+        assert response.status_code == 403, response.text
+        assert "local host" in response.json()["detail"]
 
 
 def test_explore_accepts_parameter_bindings(client: TestClient):

@@ -534,6 +534,20 @@ run_sweep() {
     || die "the full-year physics sweep failed"
 }
 
+# --- exposure audit ----------------------------------------------------------
+#
+# Everything here had only ever been exercised on 127.0.0.1, which hid a real
+# vulnerability: the raw-SQL guard treated all of RFC 1918 as local, so any client on
+# the LAN could run arbitrary SQL with an admin-scoped token. scripts/check-exposure.py
+# found it by probing from a real non-loopback address.
+check_exposure() {
+  step "Exposure audit"
+  uv run --project api python scripts/check-exposure.py \
+    || die "something is reachable off-loopback, or the security model does not hold"
+  echo
+  info "add --test to also start a throwaway instance and probe it from a LAN address"
+}
+
 usage() {
   cat <<'USAGE'
 solar farm simulator — bootstrap
@@ -543,6 +557,7 @@ solar farm simulator — bootstrap
   reset      destroy everything including the database and secrets
   status     show what is running, and the endpoints
   disk       storage used and the projected growth rate
+  exposure   audit what is reachable off-loopback; --test probes it live
   sweep      full-year physics sweep (~90 s); runs nightly in CI
   test       run every test suite and verification script
   sim:start  start the simulator on the host
@@ -601,6 +616,7 @@ case "${1:-up}" in
   reset)      cmd_reset ;;
   status)     show_status ;;
   disk)       show_disk ;;
+  exposure)   check_exposure ;;
   sweep)      run_sweep ;;
   test)       run_tests ;;
   sim:start)  start_simulator ;;

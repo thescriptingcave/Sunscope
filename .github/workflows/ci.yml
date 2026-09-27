@@ -147,6 +147,12 @@ jobs:
           uv run python scripts/export-sql.py --check
           uv run python scripts/export-sql.py --verify
 
+      - name: Exposure check (nothing reachable off-loopback, security model holds)
+        run: |
+          # The audit half. The --test half needs a non-loopback address to probe, which
+          # a GitHub runner does not have, so it is a local command (`make exposure-test`).
+          uv run --project api python scripts/check-exposure.py
+
       - name: Browser check (renders the PWA, fails if the live feed is down)
         run: node scripts/browser/check-ui.js --wait 60
 

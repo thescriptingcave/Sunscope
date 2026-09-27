@@ -8,7 +8,7 @@ SHELL := /bin/bash
 BOOTSTRAP := ./scripts/bootstrap.sh
 
 .DEFAULT_GOAL := help
-.PHONY: help up down reset status disk test sweep sim-start sim-stop logs
+.PHONY: help up down reset status disk exposure test sweep sim-start sim-stop logs
 
 help: ## show this help
 	@$(BOOTSTRAP) help
@@ -27,6 +27,9 @@ status: ## what is running, and where
 
 disk: ## storage used and the projected growth rate
 	@$(BOOTSTRAP) disk
+
+exposure: ## what is reachable off-loopback
+	@$(BOOTSTRAP) exposure
 
 test: ## every test suite and verification script
 	@$(BOOTSTRAP) test

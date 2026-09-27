@@ -22,6 +22,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -80,23 +81,95 @@ def _client(settings: Settings = Depends(get_settings)) -> InfluxClient:
 #: network. Listed explicitly rather than using ``ipaddress.is_private``, which
 #: also covers the documentation and reserved ranges -- 203.0.113.0/24 among
 #: them -- and being over-permissive is the wrong direction for a security guard.
-_LOCAL_NETWORKS = tuple(
-    ipaddress.ip_network(net) for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
-)
+#: Networks treated as "this host" for the raw-SQL endpoint.
+#:
+#: The default is loopback and link-local ONLY, and that is a deliberate change from the
+#: earlier ``10/8``, ``172.16/12`` and ``192.168/16`` -- see ``_is_local_address`` below for
+#: why the wider default was a vulnerability rather than a convenience. Docker's bridge
+#: gateway is discovered at runtime instead, so the allowance is one address rather than
+#: three whole private ranges.
+#:
+#: Override with ``API_LOCAL_NETWORKS=10.0.0.5/32,192.168.1.0/24`` when the API is
+#: deliberately served to specific hosts.
+def _configured_local_networks() -> tuple:
+    raw = os.environ.get("API_LOCAL_NETWORKS", "").strip()
+    if not raw:
+        return ()
+    networks = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            log.warning("ignoring malformed API_LOCAL_NETWORKS entry: %r", entry)
+    return tuple(networks)
+
+
+def _bridge_gateway() -> ipaddress.IPv4Address | None:
+    """The default-route gateway as seen from inside this container.
+
+    When a request arrives through a port published on ``127.0.0.1``, Docker rewrites the
+    client address to the bridge gateway -- typically ``172.22.0.1`` -- so the host's own
+    requests are *not* seen as loopback by the time they reach the API. That is why this
+    address has to be allowed.
+
+    Discovered rather than assumed, because the subnet is chosen by Docker and is not
+    guaranteed. It is one specific address, not a range: a genuinely remote client on
+    ``172.16.0.0/12`` is a different address and is still refused.
+    """
+    try:
+        with open("/proc/net/route", encoding="ascii") as handle:
+            next(handle)  # header
+            for line in handle:
+                fields = line.split()
+                if len(fields) < 3:
+                    continue
+                # Little-endian hex; the destination column is 00000000 for the default route.
+                if fields[1] == "00000000":
+                    gateway = int.from_bytes(bytes.fromhex(fields[2]), "little")
+                    return ipaddress.IPv4Address(gateway)
+    except (OSError, StopIteration, ValueError):
+        # Not Linux, or no /proc/net/route. Not fatal: the endpoint is then reachable only
+        # from genuine loopback, which is stricter, not looser.
+        return None
+    return None
+
+
+_BRIDGE_GATEWAY = _bridge_gateway()
+_CONFIGURED_NETWORKS = _configured_local_networks()
 
 
 def _is_local_address(host: str | None) -> bool:
     """True when a request provably originated on this machine or its containers.
 
-    The private ranges are not a concession to sloppiness: the API's port is
-    published on ``127.0.0.1`` only, and Docker's port forwarding rewrites the
-    client address to the bridge gateway, so a request from the host
-    legitimately arrives from something like ``172.22.0.1``. Without accepting
-    those, every real request was rejected and the endpoint was unusable.
+    **This was a vulnerability, found by ``scripts/check-exposure.py``.**
+
+    The earlier version allowed all of RFC 1918 -- ``10.0.0.0/8``, ``172.16.0.0/12`` and
+    ``192.168.0.0/16`` -- because Docker rewrites the source address of anything arriving
+    through a published port to the bridge gateway, and a loopback-only check rejected every
+    real request. But "a private address" is not "this host": the moment the API is bound to
+    ``0.0.0.0``, or put behind a reverse proxy on a private network, every client on the LAN
+    qualifies. Combined with the fact that InfluxDB 3 Core has no permission-scoped tokens,
+    that handed arbitrary SQL to anyone on the network, through an endpoint holding an admin
+    token.
+
+    The allowance is now the three things that genuinely are local:
+
+    * loopback, for a direct request;
+    * link-local, for a same-host link;
+    * **this container's own default-route gateway**, which is the specific address Docker
+      substitutes for the host's address. One address, not a range.
+
+    Anything else is refused. If the bridge gateway is not discoverable the endpoint is
+    reachable only from true loopback, which is stricter rather than more permissive.
+
+    ``API_LOCAL_NETWORKS`` re-widens this deliberately, for someone who has thought about it.
     """
     if host is None:
-        # No peer information at all. Treat as local, matching the previous
-        # behaviour; a missing client is not evidence of a remote caller.
+        # No peer information at all. Treated as local, matching previous behaviour: a
+        # missing client is not evidence of a remote caller. Uvicorn always supplies one.
         return True
     try:
         ip = ipaddress.ip_address(host)
@@ -105,7 +178,9 @@ def _is_local_address(host: str | None) -> bool:
         return False
     if ip.is_loopback or ip.is_link_local:
         return True
-    return any(ip in network for network in _LOCAL_NETWORKS)
+    if _BRIDGE_GATEWAY is not None and ip == _BRIDGE_GATEWAY:
+        return True
+    return any(ip in network for network in _CONFIGURED_NETWORKS)
 
 
 def _tickets(request: Request) -> TicketStore:
