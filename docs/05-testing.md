@@ -322,6 +322,51 @@ page to render.
 The live relay itself is covered at the unit level in `api/tests/test_live_socket.py`, which
 pins the properties that make a ticket worth having: single use, and a 30-second life.
 
+### 6.1 How the PWA check decides the dashboard has data
+
+`check-ui.js` has to answer one question before it can assert anything: *has data arrived
+yet?* Getting that wrong in either direction is a bad time — too eager and it asserts
+against an empty page, too patient and it fails a healthy system.
+
+**Power cannot answer it.** The site-power tile is legitimately `0 W` whenever the simulator
+is at night in its own timeline, and that timeline is not the wall clock: the simulator
+starts at solar noon by default and free-runs, with `--speed` to accelerate and `--realtime`
+to opt into wall-clock time. CI has run at 23:15 UTC with the simulator logging `12:31
+GHI=854` — sun up, in simulation time. So no calculation over the host clock can tell 0 W
+from no data. An earlier attempt did exactly that, computing daylight from the site's own
+latitude and longitude, and it was wrong twice over: it waived the requirement when the sun
+was genuinely up in simulation time, and it accepted the empty page's pre-data `0 W`
+immediately, after which the chart assertion failed on a dashboard that simply had not been
+given data yet. That attempt is reverted; this section is the replacement.
+
+**The signal is the `Inverters online` tile.** It reads `N / 4`, which can only appear once
+real device rows have reached the API. An empty dashboard renders it as `--`. That separates
+a populated dashboard from an empty one at any hour, without needing to know the time.
+
+Two details that are easy to get wrong and fail *silently*:
+
+- The tile is located by **label text**, not by a class name. The tiles are `tile`,
+  `tile-accent` and `tile-${tone}`; there is no per-metric class, so a selector such as
+  `.tile-online` matches nothing and the wait can never be satisfied. A bad selector here
+  looks exactly like a dead feed.
+- The wait requires `N > 0`. Zero inverters online would be a legitimate fleet-wide outage,
+  which is a different failure and should be reported as one.
+
+### 6.2 The PWA check logs what it fetched
+
+Each `/api` response is logged with its status and shape:
+
+```
+200 /api/series?table=inverter_telemetry&metric=ac_power_w&interval=1h&... -> 4304B
+200 /api/now -> devices=4
+```
+
+This exists because "no errors, no failed requests" is true and useless on its own. A
+request that *succeeds with an empty body* is a passing check and an empty chart, and
+nothing in the output said which request came back empty. When a failure like that is
+genuinely unexplained, this log is the difference between one line of evidence and a
+guess.
+
 ## 7. Load and soak
 
 ### 7.1 Load
@@ -416,6 +461,8 @@ jobs:
     - pytest api                # 202, including the live-dialect tests
     - check-pwa-contract.py, check-doc-sql.py, check-live-ws.py
     - export-sql.py --check and --verify
+    - gen-postman.py --check    # the collection matches the live OpenAPI schema
+    - check-exposure.py         # nothing reachable off-loopback; --test also probes a LAN address
     - check-ui.js, check-grafana.js      # headless browser
     - backup.py --backup then --restore into a scratch database
 ```
