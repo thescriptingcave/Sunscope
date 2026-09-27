@@ -265,6 +265,36 @@ carrying Grafana macros that only Grafana expands). A green run is a hard gate i
 Semantic assertions sit on top in the document itself: the comments say what each query
 should prove, not just that it parses.
 
+## 5.3 Authentication and roles
+
+`api/tests/test_users.py` (25 tests) and `api/tests/test_rbac.py` (9 tests). These are
+small and they are the most important tests in the API, because the thing they protect is
+the only one where a single mistake hands over the database.
+
+The split is deliberate. `test_users.py` covers the store and the role algebra — hashing,
+per-user salts, default-deny, a malformed file failing closed. `test_rbac.py` covers the
+HTTP boundary against a **real** user file written to disk, because the property under
+test is precisely that a password is compared against a stored digest; mocking the store
+would test the mock.
+
+What is pinned, and why each one is not obvious:
+
+| Assertion | The mistake it prevents |
+|---|---|
+| A viewer gets **403**, not 401, on `/api/explore` | A 401 makes a correct client log the user out and re-authenticate forever against a policy it cannot change |
+| A wrong password and an unknown user return **byte-identical** responses | A distinct error per failure mode is a username oracle |
+| A token with **no** role claim is treated as `viewer` | Tokens minted before roles existed have no such claim; defaulting to admin hands the raw-SQL surface to every token already in the wild |
+| The store cannot be bypassed with `API_ADMIN_PASSWORD` while a user file exists | Otherwise rotating a digest cannot actually lock anyone out |
+| `PRODUCTION_ITERATIONS >= 600_000`, **and** that 600k iterations is measurably slow | Lowering it is the quiet way to make an offline crack cheap. Asserting the constant alone would pass if someone replaced the hash function with a `sleep` |
+| The legacy-token test signs its JWT **by hand** | Today's `issue_token` always sets the claim, so the code under test cannot produce the token the test is about |
+| The CLI refuses to append to a file with no `users:` key | It yields a file that refuses to load. Loud, but a command that only works against a file it made itself is a trap for whoever is handed the printed hint |
+| The CLI's `users:` check is a **regex**, not a prefix test | Found by running the documented command against a real generated file: every such file opens with a comment header, so a prefix test rejects all of them |
+
+One test encodes a documented trade rather than an ideal: a role change applies at the
+*next login*, not immediately, because the role is a JWT claim. Re-reading the user file
+per request would make a demotion instant at the cost of a file read per API call. Pinning
+it means changing the trade is a deliberate act rather than a drive-by.
+
 ## 6. Frontend and E2E
 
 There is **no frontend unit-test framework**. `web/` has no Vitest, no React Testing Library
@@ -380,10 +410,10 @@ jobs:
     - ruff check sim/ api/ scripts/*.py
     - tsc --noEmit (via npm run build)
     - pytest sim                # 65
-    - pytest api --ignore=test_live.py   # 155
+    - pytest api --ignore=test_live.py   # 191
   integration:                  # brings up the whole stack
     - ./scripts/bootstrap.sh up
-    - pytest api                # 166, including the live-dialect tests
+    - pytest api                # 202, including the live-dialect tests
     - check-pwa-contract.py, check-doc-sql.py, check-live-ws.py
     - export-sql.py --check and --verify
     - check-ui.js, check-grafana.js      # headless browser
@@ -440,7 +470,7 @@ untested until CI runs it.
 | Rendered UIs | 2 checks, both headless | **implemented**: `check-ui.js`, `check-grafana.js` |
 
 **These are targets, not measurements.** No coverage tool is wired up, so nothing here is
-enforced. What is enforced, and what has actually caught bugs: 231 tests, six verification
+enforced. What is enforced, and what has actually caught bugs: 267 tests, six verification
 scripts, two headless render checks, a docs/SQL consistency gate, and a backup round-trip —
 all run by `./scripts/bootstrap.sh test` and by CI on every push.
 

@@ -60,6 +60,29 @@ class Settings(BaseSettings):
     api_secret_key: str = Field(default="", alias="API_SECRET_KEY")
     api_admin_username: str = Field(default="admin", alias="API_ADMIN_USERNAME")
     api_admin_password: str = Field(default="", alias="API_ADMIN_PASSWORD")
+
+    #: Users file. A file on disk rather than a database table: two accounts do not warrant a
+    #: table, and the API is otherwise read-only. A missing file falls back to the single
+    #: .env account, with a warning -- see users.resolve_user.
+    #:
+    #: Gitignored, with users.yaml.example committed in its place: a digest is not a
+    #: plaintext secret, but it is offline-crackable material, and the demo-account-that-
+    #: ends-up-in-public-history is the obvious way to leak one.
+    users_file: Path = Field(
+        # Same shape as PWA_DIST: an explicit path for the container, a REPO_ROOT
+        # relative one for running from a checkout. Inside the image the package sits at
+        # /app/src/solar_api, so REPO_ROOT resolves to "/" and the config directory is
+        # /app/config -- not /app/api/config. docker-compose sets API_USERS_FILE and
+        # already mounts ./api/config there.
+        #
+        # default_factory, not default: a plain `default=Path(os.environ[...])` is
+        # evaluated once at import, so setting the variable afterwards -- which is
+        # exactly what a test fixture wants to do -- would silently do nothing.
+        default_factory=lambda: Path(
+            os.environ.get("API_USERS_FILE", str(REPO_ROOT / "api" / "config" / "users.yaml"))
+        ),
+        alias="API_USERS_FILE",
+    )
     jwt_algorithm: str = "HS256"
     jwt_ttl_seconds: int = Field(default=8 * 3600, alias="JWT_TTL_SECONDS")
 

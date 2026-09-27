@@ -540,12 +540,51 @@ run_sweep() {
 # vulnerability: the raw-SQL guard treated all of RFC 1918 as local, so any client on
 # the LAN could run arbitrary SQL with an admin-scoped token. scripts/check-exposure.py
 # found it by probing from a real non-loopback address.
+# "$@" is forwarded so `exposure --test` actually probes from a LAN address. It used to be
+# dropped here, which made the flag silently do nothing and print a hint telling you to
+# try it -- the most annoying possible failure mode for a command whose whole job is to
+# tell you whether you are exposed.
 check_exposure() {
-  step "Exposure audit"
-  uv run --project api python scripts/check-exposure.py \
+  step "Exposure audit${1:+ ($1)}"
+  uv run --project api python scripts/check-exposure.py "$@" \
     || die "something is reachable off-loopback, or the security model does not hold"
   echo
-  info "add --test to also start a throwaway instance and probe it from a LAN address"
+  if [[ "${1:-}" != "--test" ]]; then
+    info "add --test to also start a throwaway instance and probe it from a LAN address"
+  fi
+}
+
+# --- accounts ----------------------------------------------------------------
+#
+# A thin wrapper over the CLI in api/src/solar_api/users.py. The CLI is the real
+# interface and gen-secrets.sh uses it directly; this exists so the password is read
+# with echo off and hashed in one step, rather than being assembled out of a pipeline
+# that a reader has to trust.
+add_user() {
+  local username="$1" role="${2:-viewer}"
+  case "$role" in
+    admin|viewer) ;;
+    *) die "role must be 'admin' or 'viewer', not '$role'" ;;
+  esac
+  [[ -f api/config/users.yaml ]] \
+    || die "no api/config/users.yaml yet. Run './scripts/bootstrap.sh up' first."
+
+  step "Adding $username ($role)"
+  # Reading the password here rather than in the caller keeps it out of the process
+  # table and the shell history, and getpass does not echo it.
+  local password
+  printf 'Password for %s: ' "$username" >&2
+  read -r -s password
+  printf '\n' >&2
+  [[ -n "$password" ]] || die "empty password"
+
+  printf '%s' "$password" \
+    | (cd api && uv run python -m solar_api.users \
+        --add config/users.yaml --user "$username" --role "$role") \
+    || die "could not add $username"
+  echo
+  info "takes effect at the next login. Existing sessions keep their old role until"
+  info "their token expires, or until API_SECRET_KEY is rotated."
 }
 
 usage() {
@@ -559,6 +598,8 @@ solar farm simulator — bootstrap
   disk       storage used and the projected growth rate
   exposure   audit what is reachable off-loopback; --test probes it live
   sweep      full-year physics sweep (~90 s); runs nightly in CI
+  user NAME [admin|viewer]
+              add an account to the API user file (default: viewer)
   test       run every test suite and verification script
   sim:start  start the simulator on the host
   sim:stop   stop the simulator
@@ -616,8 +657,10 @@ case "${1:-up}" in
   reset)      cmd_reset ;;
   status)     show_status ;;
   disk)       show_disk ;;
-  exposure)   check_exposure ;;
+  exposure)   check_exposure "${@:2}" ;;
   sweep)      run_sweep ;;
+  user)       [[ $# -ge 2 ]] || { usage; die "usage: bootstrap.sh user NAME [admin|viewer]"; }
+             add_user "$2" "${3:-viewer}" ;;
   test)       run_tests ;;
   sim:start)  start_simulator ;;
   sim:stop)   stop_simulator ;;

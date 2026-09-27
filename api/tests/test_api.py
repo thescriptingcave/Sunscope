@@ -173,7 +173,14 @@ def test_login_is_rate_limited(client: TestClient):
 
 def test_successful_login_returns_a_usable_token(client: TestClient):
     token = login(client)
-    assert client.get("/api/auth/me", headers=auth(token)).json() == {"subject": "admin"}
+    # The role rides along so a client can hide what it may not do, rather than
+    # discovering it by getting a 403 and guessing. This suite runs on the .env fallback
+    # (see conftest), whose account is an admin -- the RBAC matrix itself is in
+    # test_rbac.py, against a real user file.
+    assert client.get("/api/auth/me", headers=auth(token)).json() == {
+        "subject": "admin",
+        "role": "admin",
+    }
 
 
 # --- allowlist enforcement at the HTTP boundary -----------------------------
@@ -496,13 +503,20 @@ def test_local_address_predicate_covers_docker_bridge():
     from solar_api.main import _is_local_address
 
     # Must accept: loopback, link-local, and this container's own bridge gateway.
-    for host in ("127.0.0.1", "::1", "169.254.1.1", None):
+    for host in ("127.0.0.1", "::1", "169.254.1.1"):
         assert _is_local_address(host) is True, host
 
     # Must refuse: anything routable, and hostnames that are not provably local.
     for host in ("8.8.8.8", "203.0.113.9", "198.51.100.1", "192.0.2.1",
                  "224.0.0.1", "example.com", "not-an-ip"):
         assert _is_local_address(host) is False, host
+
+    # No peer information at all is refused, not allowed. This is a security control, and
+    # every other ambiguous case here resolves toward refusing -- "we cannot tell where
+    # this came from" is not evidence that it came from here. It used to return True.
+    # Unreachable over TCP, where uvicorn always supplies a peer; it fires only for a
+    # transport that withholds client information.
+    assert _is_local_address(None) is False
 
     # Sibling containers and LAN hosts are NOT local. They used to be accepted, which is
     # the vulnerability: every private address was treated as this machine, so any client

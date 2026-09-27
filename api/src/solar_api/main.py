@@ -38,11 +38,13 @@ from .alert_config import load_rules
 from .alert_service import AlertService
 from .alerts import RuleEngine
 from .auth import (
+    authenticate,
+    current_role,
     issue_token,
     rate_limit_login,
     rate_limit_query,
     require_auth,
-    verify_password,
+    require_capability,
 )
 from .config import PWA_DIST, Settings, get_settings
 from .influx import InfluxClient, InfluxError
@@ -71,6 +73,9 @@ class TokenResponse(BaseModel):
     token: str
     token_type: str = "bearer"  # noqa: S105 - a type tag, not a secret
     expires_in: int
+    #: Echoed so a client can adapt its UI -- a viewer is told up front that the raw-SQL
+    #: surface is not theirs, rather than discovering it with a 403 later.
+    role: str = "viewer"
 
 
 def _client(settings: Settings = Depends(get_settings)) -> InfluxClient:
@@ -168,9 +173,13 @@ def _is_local_address(host: str | None) -> bool:
     ``API_LOCAL_NETWORKS`` re-widens this deliberately, for someone who has thought about it.
     """
     if host is None:
-        # No peer information at all. Treated as local, matching previous behaviour: a
-        # missing client is not evidence of a remote caller. Uvicorn always supplies one.
-        return True
+        # No peer information at all. Refused, which is the opposite of the previous
+        # behaviour and the deliberate choice: this is a security control, and every other
+        # ambiguous case here resolves toward refusing. Over TCP, uvicorn always supplies a
+        # peer, so this is unreachable in the real deployment -- it only fires for an ASGI
+        # transport that withholds client information, which is exactly the situation in
+        # which nobody can say the caller was local.
+        return False
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
@@ -344,21 +353,30 @@ def create_app() -> FastAPI:
         client_ip = request.client.host if request.client else "unknown"
         rate_limit_login(client_ip, settings)
 
-        # Both comparisons run, so a wrong username and a wrong password take
-        # the same time and cannot be told apart by timing.
-        user_ok = body.username == settings.api_admin_username
-        pass_ok = verify_password(body.password, settings)
-        if not (user_ok and pass_ok):
+        # One message for an unknown user and a wrong password: distinguishing them
+        # tells an attacker which half of the guess was right. `authenticate` also
+        # spends the same time on an unknown username, so latency does not leak it
+        # either.
+        user = authenticate(body.username, body.password, settings)
+        if user is None:
             log.info("failed login for %r from %s", body.username, client_ip)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials"
             )
-        token, ttl = issue_token(body.username, settings)
-        return TokenResponse(token=token, expires_in=ttl)
+        token, ttl = issue_token(user, settings)
+        return TokenResponse(token=token, expires_in=ttl, role=user.role)
 
     @app.get("/api/auth/me", tags=["auth"])
-    async def me(subject: str = Depends(require_auth)) -> dict[str, str]:
-        return {"subject": subject}
+    async def me(
+        subject: str = Depends(require_auth),
+        role: str = Depends(current_role),
+    ) -> dict[str, str]:
+        """Who am I, and what may I do.
+
+        Reports the role from the token so a client can adapt without guessing. There is no
+        ``/api/auth/roles`` endpoint: two roles do not need one.
+        """
+        return {"subject": subject, "role": role}
 
     # -- telemetry -----------------------------------------------------------
 
@@ -666,15 +684,18 @@ def create_app() -> FastAPI:
             ..., min_length=1, max_length=4000,
             description="A single read-only SQL statement. Bind user input with "
                         "$name and pass values via the `params` argument — never "
-                        "concatenate them into the string. Restricted to the local "
-                        "host.",
+                        "concatenate them into the string. Requires the admin role "
+                        "(a viewer gets 403) and a loopback client.",
             examples=["SELECT * FROM site_rollup ORDER BY time DESC LIMIT 5"],
         ),
         params: str | None = Query(
             default=None,
             description='JSON object of $name bindings, e.g. {"site":"mojave"}',
         ),
-        subject: str = Depends(require_auth),
+        # `sql:raw` rather than plain authentication: this endpoint runs arbitrary
+        # SQL with an admin-scoped token, so "logged in" is not a sufficient
+        # condition. A viewer gets a 403 here and 200 everywhere else.
+        subject: str = Depends(require_capability("sql:raw")),
         settings: Settings = Depends(get_settings),
         client: InfluxClient = Depends(_client),
     ) -> dict[str, Any]:
@@ -703,10 +724,19 @@ def create_app() -> FastAPI:
         because TestClient pins the peer to 127.0.0.1 and never reproduced the
         deployment's actual network path.
 
-        So the test is "loopback, or an address that can only arrive from this
-        host": loopback, RFC 1918 private, or link-local. Nothing on a routable
-        network can produce those, and the port is not exposed off-host.
-        Strengthen before exposing this anywhere.
+        That reasoning is sound, but the first fix over-corrected: it allowed all of
+        RFC 1918, so "a private address" quietly became "anyone on the LAN" the moment
+        the API was bound to 0.0.0.0. What it is now is loopback, link-local, and this
+        container's own bridge gateway -- one address, not a range. See
+        ``_is_local_address``.
+
+        Two independent controls apply here, and both are required. **Role** (admin
+        only, because this endpoint runs SQL with an admin-scoped InfluxDB token)
+        decides *who*. **Locality** decides *from where*. Neither substitutes for the
+        other: a viewer on the host is still refused, and an admin on the LAN is still
+        refused.
+
+        Strengthen both before exposing this anywhere.
         """
         rate_limit_query(subject, settings)
         remote = request.client.host if request.client else None

@@ -308,11 +308,98 @@ server-side from an allowlisted enum, rather than accepting an `INTERVAL` string
 ### 4.7 API auth (addresses T5)
 
 - JWT with an expiry, HS256, secret from env
-- Password hashed with argon2 or bcrypt — never stored or compared in plaintext
+- Passwords stored as PBKDF2-HMAC-SHA256 digests — never stored or compared in plaintext
 - Tokens in `Authorization: Bearer`, **not** in query strings, so they do not land in access logs
 - CORS restricted to the PWA's exact origin
 - Rate limiting on `/api/auth/login` (a brute-force vector) and on `/api/series` (DoS via
   expensive range scans)
+
+#### What the password storage actually is
+
+This section previously claimed argon2 or bcrypt. Neither was in the code: the API
+compared the submitted password against `API_ADMIN_PASSWORD` in `.env` with
+`hmac.compare_digest`. The constant-time comparison was real and worth keeping — it stops
+a timing side channel — but the *storage* was plaintext, and the module carrying that
+comparison carried a comment saying so and that it "would not be acceptable for a
+multi-user system". This is now that system.
+
+The stored form is `pbkdf2-sha256$<iterations>$<salt-hex>$<digest-hex>`, 600000 iterations,
+16 random salt bytes per user. 600000 is OWASP's current floor for SHA-256;
+`api/tests/test_users.py` asserts the constant, and asserts that hashing at it is
+measurably slow, so lowering it cannot pass quietly.
+
+Two notes on the choice:
+
+- **PBKDF2, not argon2.** Argon2 is the better KDF and `argon2-cffi` would be the better
+  dependency. PBKDF2 is in the standard library, so password hashing does not add a
+  native build or a new supply-chain surface to a project whose whole point is being
+  auditable. For a local, network-isolated system this is a defensible trade; if this
+  were exposed to the internet, argon2id would be the right answer and the migration is
+  one function.
+- **Not bcrypt.** bcrypt truncates at 72 bytes and is not the OWASP recommendation now.
+
+While `api/config/users.yaml` exists it is authoritative and `API_ADMIN_PASSWORD` is
+**ignored**. That ordering is deliberate: it means rotating a digest in the user file
+cannot be undone by the API quietly falling back to a stale `.env` password. The
+converse is also true, and is the cost — an existing checkout with a wrong or missing
+user file stops accepting the old password rather than ignoring the new configuration.
+The API logs which mode it is in at startup, and a missing file is a supported
+deployment, not an error.
+
+`api/config/users.yaml` is **gitignored**; `api/config/users.yaml.example` is committed
+in its place. A PBKDF2 digest is not a plaintext secret, but it is offline-crackable
+material, and the obvious way to leak one is to generate a throwaway viewer account,
+commit it "just as an example", and forget the password is now in public history. The
+example file documents the format with digests that cannot verify against anything.
+
+### 4.7a Roles — what a login actually buys you
+
+There is one user and one password until there are two, and at two the question stops
+being "who is this" and becomes "what may they do". Two roles, and the boundary is
+deliberately drawn at the most dangerous endpoint in the project:
+
+| Role | May do |
+| --- | --- |
+| `viewer` | Read telemetry, alerts, the live feed, site metadata. **No raw SQL.** |
+| `admin` | Everything, including `/api/explore`. |
+
+**Why `/api/explore` is the line.** §4.4 records that InfluxDB 3 Core issues no
+permission-scoped tokens, so the API's own InfluxDB credential is an admin credential.
+`/api/explore` accepts arbitrary read-only SQL and runs it with that credential. Before
+roles existed, *any* authenticated user could reach it — so "authenticated" was doing no
+work at all on the one endpoint where it mattered. A viewer account can now be issued
+to anyone who needs to watch the farm, without handing out the database.
+
+`/api/explore` additionally has the loopback guard from §4.4a. The two controls are
+independent and both are needed: roles decide *who*, loopback decides *from where*.
+
+**Default-deny.** A role can only do what its grant set lists. `sql:raw` is absent from
+the viewer's set, so it needs no explicit deny rule — and an endpoint added tomorrow that
+depends on a new capability is locked down until someone deliberately grants it, rather
+than exposed because nobody remembered to hide it.
+
+**A missing role claim means `viewer`, not `admin`.** The role is a JWT claim, so tokens
+issued by the previous version of this code have no such claim. Defaulting it to admin
+would mean every token already in the wild — in a browser, in a Postman collection, in a
+shell history — gained the raw-SQL surface the moment this shipped. Pinned by
+`test_a_token_with_no_role_claim_is_treated_as_a_viewer`, which signs a token by hand
+precisely because today's code cannot produce one.
+
+**The cost of putting the role in the token.** A role change applies at the *next login*,
+not immediately: an already-issued token keeps the role it was issued with until it
+expires (`JWT_TTL_SECONDS`, 8 hours). Re-reading the user file per request would make a
+demotion immediate, at the cost of a file read on every API call. The blunt instrument for
+an account that is compromised *now* is rotating `API_SECRET_KEY`, which invalidates every
+outstanding token at once. This trade is pinned by
+`test_a_role_change_applies_to_new_logins_and_not_to_live_tokens` so that changing it is a
+deliberate act.
+
+**Where the role is not enforced.** The PWA has no SQL surface — `/api/explore` is
+reached from Postman or `curl`, not from the app — so the role badge in the header is
+identity, not a gate. Every panel is readable by a viewer. The badge is there so the
+account model is visible to the person using the app and so a future role-gated panel has
+the value already threaded through; the API enforces the role regardless of what the
+label says.
 
 ### 4.8 XSS protection (addresses T8)
 
@@ -445,7 +532,9 @@ Stated plainly rather than papered over:
 | Gap | Why | Mitigation |
 |---|---|---|
 | No TLS locally | Loopback does not need it | Add at the proxy when exposed |
-| Single shared JWT secret | Single-user system | Acceptable here; per-user secrets if it grows |
+| Single shared JWT secret | One signing key for all users | Acceptable at this size. Per-user keys if it grows; rotate `API_SECRET_KEY` to evict everyone |
+| A role change is not immediate | The role is a JWT claim (§4.7a) | Takes effect at next login, or at once by rotating `API_SECRET_KEY` |
+| PBKDF2 rather than argon2id | Standard library only, no new native dependency (§4.7) | Migrate the one hashing function if this is ever internet-exposed |
 | No audit log | Simulator, not a production system | Add if it ever holds real data |
 | EMQX ACLs use wildcards | Simplifies topology changes | Review when topology changes, not before |
 | No secret rotation tooling | Manual `.env` | Add if tokens are ever shared |

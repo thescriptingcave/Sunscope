@@ -46,6 +46,12 @@ _TEST_ENV = {
     "API_ADMIN_PASSWORD": "correct-password",
     "API_ADMIN_USERNAME": "admin",
     "INFLUX_API_TOKEN": "test-token",
+    # Point at a path that does not exist. Without this the suite reads the real
+    # api/config/users.yaml, and every test that logs in as "admin" with
+    # _TEST_ENV's password fails against the developer's actual digest -- a unit test
+    # depending on the machine it runs on, which is the exact bug this file exists to
+    # prevent. Tests that want the file present build their own; see test_users.py.
+    "API_USERS_FILE": "/nonexistent/sunscope-test-users.yaml",
     # The alert engine subscribes to a broker; no test fixture starts one, and
     # test_alert_service.py drives the engine directly with controlled input.
     "ALERTS_ENABLED": "false",

@@ -78,6 +78,29 @@ h2 {
   border-bottom: 1px solid var(--line);
 }
 
+/* The right-hand group in the header: the role badge and the sign-out button, so they
+   stay together and stay right-aligned as the header reflows on a narrow phone. */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-shrink: 0;
+}
+
+.role-badge {
+  font-size: 0.68rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  /* Deliberately neutral rather than colour-coded. A green "admin" and an amber
+     "viewer" would imply the viewer is a lesser or degraded session, which is the wrong
+     framing: a viewer is the *intended* account for anyone who only needs to watch. */
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
 .app-main {
   max-width: 1180px;
   margin: 0 auto;

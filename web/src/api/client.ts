@@ -196,8 +196,11 @@ export interface AlertRule {
 // --- endpoints --------------------------------------------------------------
 
 export const api = {
+  // `role` comes back on the token response itself, so the UI knows what the session
+  // can do without a second round trip on every page load. The API is the only thing
+  // that enforces it; this is for hiding controls the user cannot use.
   login: (username: string, password: string) =>
-    request<{ token: string; expires_in: number }>('/auth/login', {
+    request<{ token: string; expires_in: number; role: string }>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     }),

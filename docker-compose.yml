@@ -214,6 +214,9 @@ services:
       # The PWA dev server on :5173. Same-origin in production, where the API
       # serves the built bundle and CORS is not involved at all.
       API_CORS_ORIGINS: http://localhost:5173,http://localhost:8000,http://127.0.0.1:5173,http://127.0.0.1:8000
+      # The users file, so RBAC applies to the containerised API rather than
+      # silently falling back to the single .env account. See docs/04-security.md.
+      API_USERS_FILE: /app/config/users.yaml
     volumes:
       - ./api/src:/app/src
       - ./secrets:/run/secrets:ro

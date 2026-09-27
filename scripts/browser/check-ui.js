@@ -118,6 +118,20 @@ const VIEWPORTS = [
     }
     console.log('  dashboard shell rendered');
 
+    // The role badge. It is the only part of the header driven by something other than
+    // site config, so it is the part most likely to regress silently -- a missing role
+    // leaves the header looking perfectly fine.
+    const role = (await page.textContent('.role-badge').catch(() => null))?.trim();
+    if (role !== 'admin') {
+      throw new Error(
+        `expected the role badge to read "admin", got ${JSON.stringify(role)}.\n` +
+          '  The login response carries a role and useAuth stores it. If the badge is ' +
+          '  missing entirely, either the role never arrived from /api/auth/login or ' +
+          '  Header stopped rendering it.'
+      );
+    }
+    console.log(`  role badge     : ${role}`);
+
     // Wait for real data, not merely for a rendered shell. Two conditions: the
     // MQTT feed must report itself live, and a tile must hold a non-zero
     // number. Comparing the tile text against "0.0 kW" is not enough -- the

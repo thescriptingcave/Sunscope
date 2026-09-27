@@ -23,7 +23,15 @@ import type {
 } from '../api/client'
 import type { ConnectionState, LiveReading, Rollup } from '../mqtt/live'
 
-export function Header({ site, onLogout }: { site: string; onLogout: () => void }) {
+export function Header({
+  site,
+  onLogout,
+  role,
+}: {
+  site: string
+  onLogout: () => void
+  role: string | null
+}) {
   return (
     <header className="app-header">
       <div>
@@ -32,9 +40,18 @@ export function Header({ site, onLogout }: { site: string; onLogout: () => void 
           {site} · 1.0 MWac · 1.19 MWp
         </p>
       </div>
-      <button className="btn" onClick={onLogout}>
-        Sign out
-      </button>
+      {/* The role is shown, not acted on. Every panel in this app is readable by a
+          viewer, so there is nothing here to hide yet; /api/explore -- the one
+          admin-only surface -- is reached from Postman or curl, not from here. Labelling
+          the session makes the account model visible to the person using it, and means a
+          future role-gated panel has the value already threaded through. The API
+          enforces the role regardless of what this label says. */}
+      <div className="header-actions">
+        {role && <span className="role-badge">{role}</span>}
+        <button className="btn" onClick={onLogout}>
+          Sign out
+        </button>
+      </div>
     </header>
   )
 }

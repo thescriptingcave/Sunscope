@@ -178,6 +178,20 @@ baseline system raised alerts, the alerting would be untestable. Use
 | **`group_by`** | Splitting one metric into one series per value of a dimension. |
 | **Allowlist** | The closed set of legal `table`/`metric`/`dimension` values, enforced before any SQL is built. `GET /api/meta` publishes it so the UI cannot drift from it. |
 
+### Access control
+
+| Term | Meaning |
+|---|---|
+| **Role** | What a logged-in account may do. Exactly two: `viewer` and `admin`. Carried as a claim in the JWT. |
+| **`viewer`** | Read telemetry, alerts, the live feed, site metadata. **Cannot** reach `/api/explore`. The right account for anyone who only needs to watch. |
+| **`admin`** | Everything, including `/api/explore`. |
+| **Capability** | A named permission like `sql:raw` or `alerts:read`. A role is a set of them; an endpoint declares the one it needs. |
+| **Default-deny** | A role can only do what its grant set lists. A capability nobody has thought about is refused, not allowed — so a new endpoint is locked down until someone deliberately opens it. |
+| **`sql:raw`** | The capability guarding `/api/explore`. The one capability deliberately absent from the viewer's set. |
+| **`/api/auth/me`** | Returns `{"subject", "role"}` for the current token. How a client learns what a session may do without guessing. |
+| **User file** | `api/config/users.yaml` — usernames, roles, PBKDF2 digests. Gitignored; `users.yaml.example` is committed in its place. |
+| **Fallback account** | The single `admin` from `API_ADMIN_PASSWORD` in `.env`, used only when no user file exists. Its password is **not** hashed, and the API logs that it is running in this mode. |
+
 ## 7. Operations
 
 | Term | Meaning |

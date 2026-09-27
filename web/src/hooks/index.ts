@@ -6,6 +6,7 @@ import { liveFeed, type ConnectionState, type LiveReading, type Rollup } from '.
 
 export function useAuth() {
   const [token, setTokenState] = useState<string | null>(null)
+  const [role, setRole] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -16,6 +17,7 @@ export function useAuth() {
       const result = await api.login(username, password)
       setToken(result.token)
       setTokenState(result.token)
+      setRole(result.role)
       return true
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Login failed')
@@ -28,9 +30,12 @@ export function useAuth() {
   const logout = useCallback(() => {
     setToken(null)
     setTokenState(null)
+    // Cleared with the token, not left behind: a stale role surviving a sign-out is the
+    // kind of thing that later gets mistaken for a permission that outlives the session.
+    setRole(null)
   }, [])
 
-  return { token, error, busy, login, logout }
+  return { token, role, error, busy, login, logout }
 }
 
 // --- live feed -------------------------------------------------------------

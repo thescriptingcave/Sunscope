@@ -37,6 +37,12 @@ logs/
 shots/
 # Database backups from scripts/backup.py. Real data, not source.
 backups/
+# The API user store: PBKDF2 digests of real passwords, written by
+# scripts/gen-secrets.sh. A digest is not a plaintext secret, but it is offline-crackable
+# material -- publishing one for a password anyone can guess turns the account into a
+# published credential. Commit api/config/users.yaml.example instead, which documents the
+# format with digests that cannot verify against anything.
+api/config/users.yaml
 
 # --- Editors / OS ---
 .DS_Store

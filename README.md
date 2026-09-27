@@ -54,6 +54,26 @@ Then open **http://127.0.0.1:8000/** and sign in:
 - username `admin`
 - password: the `API_ADMIN_PASSWORD` line in `.env` — `grep API_ADMIN_PASSWORD .env`
 
+That password also gets hashed into `api/config/users.yaml` on first run, and
+the API uses the file rather than `.env` from then on. The two are equivalent
+until you change one, which is the point: you can add a read-only account
+without touching anyone's existing password.
+
+<details>
+<summary>Adding a second person, or a read-only account</summary>
+
+```bash
+cd api
+printf 'the-new-password' | uv run python -m solar_api.users \
+    --add config/users.yaml --user alice --role viewer
+```
+
+Roles are `viewer` (read telemetry, alerts, live feed) and `admin` (everything,
+including `/api/explore`, which runs raw SQL). A viewer can watch the farm all
+day without being able to query the database. Passwords are stored as PBKDF2
+digests, never in the clear. See [docs/04-security.md §4.7](docs/04-security.md).
+
+</details>
 <details>
 <summary>Driving the pieces yourself instead</summary>
 
@@ -130,7 +150,7 @@ Credentials live in `.env` (gitignored, mode 600); token files are in `secrets/`
 docs/                 design documentation (9 documents)
 docs/sql/             35 runnable .sql files, generated from docs/06-sql-examples.md
 sim/                  Python simulator        (host-run, 65 tests)
-api/                  FastAPI backend         (in compose, 166 tests)
+api/                  FastAPI backend         (in compose, 202 tests)
 api/config/alerts.yaml declarative alert rules
 web/                  React PWA              (built to web/dist, served by the API at /)
 telegraf/             MQTT -> InfluxDB config
@@ -151,7 +171,7 @@ Only the simulator runs on the host; the other five components run in Docker.
 | 2 | InfluxDB schema: 5 tables + Last Value Cache, created before first write | DONE |
 | 3 | Ingest: Telegraf `mqtt_consumer` → InfluxDB, verified end to end | DONE |
 | 4 | Simulator: pvlib physics, fault scenarios, per-inverter MQTT client with LWT | DONE (65 tests) |
-| 5 | FastAPI: auth, `/api/now` off the LVC, `/api/series`, `/api/explore` | DONE (166 tests) |
+| 5 | FastAPI: auth + RBAC, `/api/now` off the LVC, `/api/series`, `/api/explore` | DONE (202 tests) |
 | 6 | PWA: live tiles over MQTT/WebSocket | DONE |
 | 7 | Alerting: threshold + staleness rules, in-app feed, event persistence | DONE |
 | 8 | Grafana dashboards | DONE (2 dashboards, 13 panel queries) |
@@ -372,7 +392,7 @@ uv run --project api --with paho-mqtt python scripts/watch.py
 ./scripts/bootstrap.sh test
 ```
 
-220 tests, lint, type checking, and the verification scripts — including one
+267 tests, lint, type checking, and the verification scripts — including one
 that loads the PWA in headless Chromium and fails if the live feed does not come
 up. It writes screenshots to `shots/`.
 
@@ -381,7 +401,7 @@ up. It writes screenshots to `shots/`.
 | `check-pwa-contract` | wrong types, impossible numbers, a dead alert engine | a 132 % capacity factor from a unit error in the simulator |
 | `check-live-ws` | a broken broker WebSocket path | — (the path had no coverage at all) |
 | `check-doc-sql` | docs that have drifted from the database | a query teaching a bug; a column copied from an unrelated project |
-| `check-ui` | anything only a real browser can see | the live feed throwing `mqttModule.connect is not a function` while all 208 tests passed |
+| `check-ui` | anything only a real browser can see | the live feed throwing `mqttModule.connect is not a function` while the entire test suite passed |
 
 `check-ui` earns its place. It logs in for real, waits for MQTT data to land in
 the tiles, and fails if the feed never reports Live. Type checking could not

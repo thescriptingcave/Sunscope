@@ -16,7 +16,7 @@ import {
 import './styles.css'
 
 export default function App() {
-  const { token, error: authError, busy, login, logout } = useAuth()
+  const { token, role, error: authError, busy, login, logout } = useAuth()
 
   if (!token) {
     return (
@@ -25,7 +25,7 @@ export default function App() {
       </div>
     )
   }
-  return <Dashboard onLogout={logout} />
+  return <Dashboard onLogout={logout} role={role} />
 }
 
 function LoginForm({
@@ -77,7 +77,7 @@ function LoginForm({
   )
 }
 
-function Dashboard({ onLogout }: { onLogout: () => void }) {
+function Dashboard({ onLogout, role }: { onLogout: () => void; role: string | null }) {
   const { readings, rollup, state, lastUpdate } = useLiveFeed()
   const { devices, stale } = useNow(true)
 
@@ -136,7 +136,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
 
   return (
     <div className="app">
-      <Header site={site} onLogout={onLogout} />
+      <Header site={site} onLogout={onLogout} role={role} />
 
       <main className="app-main">
         <Live state={state} lastUpdate={lastUpdate} now={now} />

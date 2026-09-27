@@ -1,18 +1,18 @@
-"""Authentication: single-user JWT login with rate limiting.
+"""Authentication and role-based authorisation.
 
-Deliberately simple, because it is a single-operator tool: one username and
-password from the environment, exchanged for a signed JWT.
+A username and password become a signed JWT that carries the user's **role**, so
+authorisation needs no lookup on the hot path and cannot drift from what was
+issued at login.
 
-The password is compared with :func:`hmac.compare_digest` rather than hashed.
-That is a reasonable trade for a credential that lives in a local ``.env`` and
-is never stored in a database, but it would **not** be acceptable for a
-multi-user system, where a database-stored hash is the only thing that protects
-a password at rest. See the known gaps in ``docs/04-security.md``.
+Passwords are hashed at rest -- see :mod:`solar_api.users`. The pre-RBAC design compared an
+unhashed ``.env`` value with :func:`hmac.compare_digest`, and its own docstring recorded that
+this "would not be acceptable for a multi-user system, where a database-stored hash is the
+only thing that protects a password at rest". That is now this system. The ``.env`` account
+survives as a single-operator fallback and is reported at startup as degraded.
 """
 
 from __future__ import annotations
 
-import hmac
 import time
 from collections import defaultdict, deque
 
@@ -21,24 +21,41 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .config import Settings, get_settings
+from .users import ROLE_ADMIN, ROLE_VIEWER, User, check_password, resolve_user
 
 #: bearer scheme. auto_error=False so a missing header gives our own 401 shape.
 bearer = HTTPBearer(auto_error=False)
 
 
-def verify_password(candidate: str, settings: Settings) -> bool:
-    """Constant-time comparison against the configured password."""
-    expected = settings.api_admin_password
-    if not expected:
-        return False
-    return hmac.compare_digest(candidate.encode(), expected.encode())
+def authenticate(username: str, candidate: str, settings: Settings) -> User | None:
+    """Return the user when the password is right, else ``None``.
+
+    Uniform failure: an unknown username and a wrong password are indistinguishable to the
+    caller, and both are cheap enough not to leak through timing -- the unknown-user path
+    still runs a hash comparison against a dummy digest.
+    """
+    users = resolve_user(settings)
+    user = next((u for u in users if u.username == username), None)
+    if user is None:
+        # Spend the time anyway, so response latency does not reveal whether the
+        # username exists.
+        check_password(candidate, User("_absent", ROLE_ADMIN, "pbkdf2-sha256$1$00$00"))
+        return None
+    return user if check_password(candidate, user) else None
 
 
-def issue_token(username: str, settings: Settings) -> tuple[str, int]:
-    """Return ``(token, expires_in_seconds)``."""
+def issue_token(user: User, settings: Settings) -> tuple[str, int]:
+    """Return ``(token, expires_in_seconds)`` for *user*.
+
+    The role is a claim, so authorisation never has to re-read the user file. The cost is
+    that a role change does not take effect until the token expires -- ``jwt_ttl_seconds``,
+    which is why it is not a large number. Rotating ``API_SECRET_KEY`` invalidates every
+    outstanding token at once, which is the blunt instrument for a compromised account.
+    """
     now = int(time.time())
     payload = {
-        "sub": username,
+        "sub": user.username,
+        "role": user.role,
         "iat": now,
         "exp": now + settings.jwt_ttl_seconds,
     }
@@ -115,6 +132,13 @@ async def require_auth(
     settings: Settings = Depends(get_settings),
 ) -> str:
     """FastAPI dependency: resolve the caller's username from the JWT."""
+    return _claims_to_subject(_require_claims(credentials, settings))
+
+
+def _require_claims(
+    credentials: HTTPAuthorizationCredentials | None,
+    settings: Settings,
+) -> dict:
     if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -122,9 +146,56 @@ async def require_auth(
             headers={"WWW-Authenticate": "Bearer"},
         )
     claims = decode_token(credentials.credentials, settings)
-    subject = claims.get("sub")
-    if not subject:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token"
-        )
-    return str(subject)
+    if not claims.get("sub"):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token")
+    return claims
+
+
+def _claims_to_subject(claims: dict) -> str:
+    return str(claims["sub"])
+
+
+async def current_role(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    settings: Settings = Depends(get_settings),
+) -> str:
+    """The caller's role, from the token.
+
+    Defaults to ``viewer`` when the claim is absent, so a token minted before roles existed
+    has less privilege rather than more.
+    """
+    return str(_require_claims(credentials, settings).get("role", ROLE_VIEWER))
+
+
+def require_capability(capability: str):
+    """Dependency factory: require *capability*, or 403.
+
+    **403, not 401.** The caller is authenticated; they are simply not allowed. Returning 401
+    would tell a viewer their token is bad and send them to log in again, which is both wrong
+    and confusing.
+
+    A token with no ``role`` claim is treated as ``viewer``, not ``admin``. A token minted
+    before roles existed, or by an older build, therefore loses privilege rather than gaining
+    it -- the safe direction for a missing claim to fail.
+    """
+
+    async def dependency(
+        credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+        settings: Settings = Depends(get_settings),
+    ) -> str:
+        claims = _require_claims(credentials, settings)
+        role = claims.get("role", ROLE_VIEWER)
+        user = User(str(claims["sub"]), role, "")
+        if not user.can(capability):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"role {role!r} may not {capability}",
+            )
+        return str(claims["sub"])
+
+    return dependency
+
+
+def require_role(capability: str):
+    """Alias kept for readability at the call site: ``Depends(require_role("..."))``."""
+    return require_capability(capability)
