@@ -78,6 +78,39 @@ const VIEWPORTS = [
       }
     });
 
+    // What the PWA actually asked the API for, and how much each answer held.
+    //
+    // Added while chasing a CI failure reporting "chart drew no series" when the database
+    // was demonstrably populated -- the API had returned 56 points for a series query 30
+    // seconds earlier. "no errors, no failed requests" was true and useless: a request that
+    // succeeds with an empty body is a passing check and an empty chart, and nothing in the
+    // output said which request came back empty.
+    const apiCalls = [];
+    page.on('response', async (r) => {
+      let url;
+      try {
+        url = new URL(r.url());
+      } catch {
+        return;
+      }
+      if (!url.pathname.startsWith('/api/') || url.pathname === '/api/auth/login') return;
+      let size = 'unread';
+      try {
+        const text = await r.text();
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) size = `${parsed.length} rows`;
+        else if (parsed && typeof parsed === 'object') {
+          if (Array.isArray(parsed.devices)) size = `devices=${parsed.devices.length}`;
+          else if (Array.isArray(parsed.inverters)) size = `inverters=${parsed.inverters.length}`;
+          else if (Array.isArray(parsed.series)) size = `series=${parsed.series.length}`;
+          else size = `${text.length}B`;
+        } else size = `${text.length}B`;
+      } catch {
+        // Non-JSON or already-consumed body; the status line above is the useful part.
+      }
+      apiCalls.push(`${r.status()} ${url.pathname}${url.search} -> ${size}`);
+    });
+
     console.log(`\n=== ${vp.name} (${vp.width}x${vp.height}) ===`);
     await page.goto(BASE, { waitUntil: 'domcontentloaded' });
 
@@ -132,26 +165,68 @@ const VIEWPORTS = [
     }
     console.log(`  role badge     : ${role}`);
 
-    // Wait for real data, not merely for a rendered shell. Two conditions: the
-    // MQTT feed must report itself live, and a tile must hold a non-zero
-    // number. Comparing the tile text against "0.0 kW" is not enough -- the
-    // pre-data value is "0 W", which is not that string, so such a check exits
-    // on the very first poll and captures an empty dashboard.
+    // Wait for real data, not merely for a rendered shell. The MQTT feed must report
+    // itself live, and the tiles must hold real numbers.
+    //
+    // It used to require a *non-zero* power tile, which is not a requirement this system
+    // can make. The simulator does not run on the wall clock: by default it starts at
+    // solar noon and free-runs (`--speed`, with `--realtime` to opt into wall-clock time).
+    // So whether the dashboard shows 0 W depends on where the simulator is in its own
+    // timeline, not on what time it is here. A check that reads the host clock cannot
+    // know -- and when CI ran at 23:15 UTC with the simulator at midday, a host-clock
+    // answer said "night" and would have waived a requirement that genuinely applied.
+    //
+    // Liveness is asserted instead, and liveness is what this check is for: the feed
+    // reports Live, the tiles are finite numbers, the chart drew series, and the cards
+    // and rules are present. A dead feed fails all of those. Zero watts, which is a
+    // perfectly good answer at the top of the simulator's night, passes.
+    //
+    // The readiness signal is the "Inverters online" tile, not the power tile. Power
+    // cannot be it: it is legitimately 0 whenever the simulator's own timeline is at
+    // night. "N / 4" is a different matter -- it can only appear once real device rows
+    // have reached the API, so it distinguishes a populated dashboard from an empty one
+    // at any hour. An empty dashboard renders it as "--", which is what the loop is
+    // waiting to see change.
+    //
+    // Note what is deliberately NOT the condition: `watts >= 0`. That was tried and it is
+    // useless, because the pre-data value is "0 W" -- so it passes on the very first poll
+    // of an entirely empty page and the check stops waiting for data. Rejecting 0 as a
+    // readiness signal is what the old code did, and that is why it needed the hour of
+    // day to tell 0 W from no data. Reading a different tile separates the two cases
+    // without needing to know the time.
     const deadline = Date.now() + WAIT * 1000;
     let seen = null;
     let live = false;
+    let online = null;
     while (Date.now() < deadline) {
       live = (await page.textContent('.banner-label').catch(() => null))?.trim() === 'Live';
       const tile = (await page.textContent('.tile-accent .tile-value').catch(() => null))?.trim();
       const watts = tile ? parseFloat(tile) : NaN;
-      if (live && Number.isFinite(watts) && watts > 0) {
+      // Found by label text, not by a class name. The tiles are `tile`, `tile-accent` and
+      // `tile-${tone}`; there is no per-metric class, so a selector like `.tile-online`
+      // matches nothing at all and the wait can never succeed. A wrong guess here fails
+      // silently -- `online` stays null, the loop just runs out its deadline -- which is
+      // indistinguishable from a genuinely dead feed.
+      online = await page
+        .evaluate(() => {
+          const tile = [...document.querySelectorAll('.tile')].find((t) =>
+            /inverters\s+online/i.test(t.querySelector('.tile-label')?.textContent ?? ''),
+          );
+          return tile?.querySelector('.tile-value')?.textContent?.trim() ?? null;
+        })
+        .catch(() => null);
+      // A real device count, not the "--" placeholder. Zero inverters online would be a
+      // legitimate fleet-wide outage and is a different failure; require at least one.
+      const reporting = /^\d+\s*\/\s*\d+$/.test(online ?? '') && parseInt(online, 10) > 0;
+      if (live && Number.isFinite(watts) && reporting) {
         seen = tile;
         break;
       }
       await page.waitForTimeout(1000);
     }
     console.log(`  live banner    : ${live ? 'Live' : 'NOT live'}`);
-    console.log(`  site power tile: ${seen ?? 'never became non-zero'}`);
+    console.log(`  inverters      : ${online ?? 'never reported'}`);
+    console.log(`  site power tile: ${seen ?? 'no device data yet'}`);
     const summary = await page.evaluate(() => {
       const text = (sel) => document.querySelector(sel)?.textContent?.trim() ?? null;
       const tiles = [...document.querySelectorAll('.tile')].map((t) => ({
@@ -175,6 +250,10 @@ const VIEWPORTS = [
     console.log('  chart series  :', summary.chartPaths, 'paths');
     console.log('  string cells  :', summary.heatCells);
     console.log('  rules listed  :', summary.rules);
+    if (apiCalls.length) {
+      console.log('  api calls     :');
+      for (const line of [...new Set(apiCalls)]) console.log(`      ${line}`);
+    }
 
     results[vp.name] = {
       live,
@@ -210,7 +289,7 @@ const VIEWPORTS = [
   const failures = [];
   for (const [name, s] of Object.entries(results)) {
     if (!s.live) failures.push(`${name}: MQTT feed never reported Live`);
-    if (!s.power) failures.push(`${name}: site power tile never became non-zero`);
+    if (!s.power) failures.push(`${name}: site power tile never became a number`);
     if (s.cards === 0) failures.push(`${name}: no inverter cards rendered`);
     if (s.series === 0) failures.push(`${name}: chart drew no series`);
     if (s.rules === 0) failures.push(`${name}: no alert rules listed`);
