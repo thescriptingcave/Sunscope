@@ -322,6 +322,44 @@ page to render.
 The live relay itself is covered at the unit level in `api/tests/test_live_socket.py`, which
 pins the properties that make a ticket worth having: single use, and a 30-second life.
 
+### 6.1 The site-power assertion is time-of-day aware
+
+`check-ui.js` requires the site-power tile to be non-zero. That is only a valid requirement
+while the sun is up: **the simulator publishes nothing after sunset**, so from dusk until dawn
+the dashboard correctly shows `0 W` and the check failed — every night, on correct behaviour.
+The gate was red for roughly half of every day, which is the same class of mistake as the
+first-draft physics sweep assertions recorded in §2.5.
+
+Nothing in the system can answer "should this be non-zero right now". The API exposes no
+`sun_up` field, and the database cannot either, because *the sun is down* and *the feed is
+dead* are indistinguishable in the data — both look like "no recent rows". So the check
+computes daylight itself, from the site's own coordinates in `topology.py`, using the standard
+NOAA sunrise/sunset approximation.
+
+| Condition | Requirement |
+|---|---|
+| Daylight | power tile **> 0**, as before. Unchanged, and still strict. |
+| After dark | power tile is a **finite number ≥ 0** — so `0 W` passes and `NaN` or a negative value still fails |
+| Either | the live banner must read `Live`, inverter cards, chart series and alert rules must all be present |
+
+The window is validated against the simulator's own pvlib model
+(`sun_rise_set_transit_spa`) and agrees to within about a minute — far tighter than the ~20
+minutes of dawn and dusk twilight across which the requirement is relaxed anyway.
+
+Two bugs in this function were found by testing it rather than by reading it, and both are
+worth recording because the second is invisible to inspection:
+
+- Sunrise and sunset were **swapped**. The window had the right width and the right
+  endpoints, merely labelled inside out, so `isDaylight` returned true at midnight — which
+  would have left the original night-time failure in place while appearing to fix it.
+- The comparison at a **UTC date boundary** disagrees with a naive `sunrise <= now <= sunset`,
+  because sunset at this longitude falls after midnight UTC. At 00:00 UTC the sun is genuinely
+  still up (17:00 PDT); the naive comparison says otherwise.
+
+The daylight branch was verified to still fail on a dead feed by forcing `isDaylight()` to
+return `true` at 23:00 and confirming the check reports `site power tile never became
+non-zero` and exits non-zero.
+
 ## 7. Load and soak
 
 ### 7.1 Load

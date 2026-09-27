@@ -34,6 +34,97 @@ const BASE = arg('base', 'http://127.0.0.1:8000');
 const OUT = path.resolve(ROOT, arg('out', 'shots'));
 const WAIT = Number(arg('wait', '45'));
 
+// The site this simulator models: 36.2 N, 115.1 W, near Mojave, Nevada.
+// Kept in step with topology.py's Site(). Hardcoding it here rather than importing
+// means this check has no Python dependency, which is what lets it run in the
+// browser-check step without pulling in the sim environment.
+const SITE = { latitude: 36.2, longitude: -115.1 };
+
+const DEG = Math.PI / 180;
+
+/**
+ * Sunrise and sunset for the site today, in minutes after midnight UTC.
+ *
+ * WHY THIS IS HERE
+ * The check below used to require the site-power tile to become non-zero. That is
+ * only true while the sun is up: the simulator publishes nothing after sunset, so
+ * from dusk until dawn the dashboard correctly shows 0 W -- and the check failed
+ * every single night, on correct behaviour. Neither the API nor the PWA exposes a
+ * `sun_up` flag, and the database cannot answer it either, because "the sun is
+ * down" and "the feed is dead" look identical in the data. So the check computes
+ * daylight itself.
+ *
+ * The formulae are the standard NOAA sunrise/sunset approximation, accurate to
+ * about a minute for this latitude, which is far tighter than the ~20 minutes of
+ * dawn and dusk twilight the assertion is skipped across anyway.
+ *
+ * Returns null when the sun does not rise or set on this date, which cannot happen
+ * at 36 degrees north but is handled rather than assumed.
+ */
+function daylightWindowUtc(date = new Date()) {
+  const startOfYear = Date.UTC(date.getUTCFullYear(), 0, 1);
+  const dayOfYear = Math.floor((date - startOfYear) / 86400000) + 1;
+
+  // Fractional year, in radians.
+  const gamma = ((2 * Math.PI) / 365) * (dayOfYear - 1 + (date.getUTCHours() - 12) / 24);
+
+  // Equation of time, in minutes.
+  const eqtime =
+    229.18 *
+    (0.000075 +
+      0.001868 * Math.cos(gamma) -
+      0.032077 * Math.sin(gamma) -
+      0.014615 * Math.cos(2 * gamma) -
+      0.040849 * Math.sin(2 * gamma));
+
+  // Solar declination, in radians.
+  const decl =
+    0.006918 -
+    0.399912 * Math.cos(gamma) +
+    0.070257 * Math.sin(gamma) -
+    0.006758 * Math.cos(2 * gamma) +
+    0.000907 * Math.sin(2 * gamma) -
+    0.002697 * Math.cos(3 * gamma) +
+    0.00148 * Math.sin(3 * gamma);
+
+  // Hour angle at sunrise, including the standard -0.833 deg for refraction and
+  // the solar disc radius, so this is the moment the sun is actually visible.
+  const cosHa =
+    Math.cos(90.833 * DEG) / (Math.cos(SITE.latitude * DEG) * Math.cos(decl)) -
+    Math.tan(SITE.latitude * DEG) * Math.tan(decl);
+  if (cosHa > 1 || cosHa < -1) return null;
+  const ha = Math.acos(cosHa) / DEG;
+
+  // The hour angle enters sunrise and sunset with opposite signs. Getting this backwards
+  // is easy and produces a window that is the right *width* and the right *endpoints*,
+  // merely labelled inside out -- so `isDaylight` returns true at midnight and the
+  // non-zero-power assertion runs all night, which is the bug this whole function exists
+  // to fix. Validated against pvlib's sun_rise_set_transit_spa below.
+  let sunrise = 720 - 4 * (SITE.longitude + ha) - eqtime;
+  let sunset = 720 - 4 * (SITE.longitude - ha) - eqtime;
+  // Sunset usually crosses midnight UTC, so the window is [sunrise, sunset + 1440).
+  // Normalising both keeps the comparison below a single interval test.
+  if (sunset < sunrise) sunset += 1440;
+  return { sunrise, sunset };
+}
+
+/** True when the sun is up at the site right now. */
+function isDaylight(date = new Date()) {
+  const window = daylightWindowUtc(date);
+  if (window === null) return false;
+  const minutes = date.getUTCHours() * 60 + date.getUTCMinutes();
+  // Before dawn the clock has not reached `sunrise`; after dusk it has passed
+  // `sunset`, which is now in tomorrow's range.
+  const elapsed = minutes >= window.sunrise ? minutes : minutes + 1440;
+  return elapsed < window.sunset;
+}
+
+function fmtMinutes(mins) {
+  const h = Math.floor(mins / 60) % 24;
+  const m = Math.floor(mins % 60);
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}Z`;
+}
+
 /** Pull the admin password out of .env without printing it. */
 function password() {
   const env = fs.readFileSync(path.join(ROOT, '.env'), 'utf8');
@@ -132,11 +223,26 @@ const VIEWPORTS = [
     }
     console.log(`  role badge     : ${role}`);
 
-    // Wait for real data, not merely for a rendered shell. Two conditions: the
-    // MQTT feed must report itself live, and a tile must hold a non-zero
-    // number. Comparing the tile text against "0.0 kW" is not enough -- the
-    // pre-data value is "0 W", which is not that string, so such a check exits
-    // on the very first poll and captures an empty dashboard.
+    // Wait for real data, not merely for a rendered shell. The MQTT feed must report
+    // itself live, and the tile must hold a number that is plausible for the time of day.
+    //
+    // "Non-zero" is only the right requirement while the sun is up. The simulator
+    // publishes nothing after sunset, so from dusk until dawn the dashboard correctly
+    // shows 0 W -- and requiring non-zero made this check fail every night, on correct
+    // behaviour. `isDaylight()` decides which requirement applies.
+    //
+    // In daylight the requirement stays strict, and stays strict about *when* it is
+    // applied: comparing the tile text against "0.0 kW" is not enough, because the
+    // pre-data value is "0 W", which is not that string, so such a check exits on the
+    // very first poll and captures an empty dashboard.
+    const daylight = isDaylight();
+    const window = daylightWindowUtc();
+    console.log(
+      `  site daylight  : ${daylight ? 'yes' : 'no'} ` +
+        `(sun ${fmtMinutes(window.sunrise)}-${fmtMinutes(window.sunset)})`,
+    );
+    const wattsRequired = daylight;
+
     const deadline = Date.now() + WAIT * 1000;
     let seen = null;
     let live = false;
@@ -144,14 +250,23 @@ const VIEWPORTS = [
       live = (await page.textContent('.banner-label').catch(() => null))?.trim() === 'Live';
       const tile = (await page.textContent('.tile-accent .tile-value').catch(() => null))?.trim();
       const watts = tile ? parseFloat(tile) : NaN;
-      if (live && Number.isFinite(watts) && watts > 0) {
+      // Out of daylight, a finite non-negative number is the pass condition -- including
+      // the "0 W" that is the honest answer at 23:00. A NaN, or a negative number, is a
+      // real failure either way and is caught by `wattsAccepted` below.
+      const wattsAccepted = Number.isFinite(watts) && watts >= 0 && (!wattsRequired || watts > 0);
+      if (live && wattsAccepted) {
         seen = tile;
         break;
       }
       await page.waitForTimeout(1000);
     }
     console.log(`  live banner    : ${live ? 'Live' : 'NOT live'}`);
-    console.log(`  site power tile: ${seen ?? 'never became non-zero'}`);
+    console.log(
+      `  site power tile: ${seen ?? (wattsRequired ? 'never became non-zero' : 'never became a number')}`,
+    );
+    if (!daylight) {
+      console.log('  note           : after dark, so 0 W is the correct value and is not treated as a dead feed');
+    }
     const summary = await page.evaluate(() => {
       const text = (sel) => document.querySelector(sel)?.textContent?.trim() ?? null;
       const tiles = [...document.querySelectorAll('.tile')].map((t) => ({
@@ -203,14 +318,22 @@ const VIEWPORTS = [
 
   // Gate on the outcome, not merely on the script completing. Every other check
   // in this repo is structural -- assets resolve, endpoints return the right
-  // shape, 208 tests pass -- and all of them were green while the live feed
+  // shape, hundreds of tests pass -- and all of them were green while the live feed
   // was throwing `mqttModule.connect is not a function` in the browser. The
   // dashboard looked perfect and was completely dead. This is the only check
   // that can see that class of failure, so it has to fail loudly.
+  // Re-evaluated here, at the point of reporting, so the message names the requirement
+  // that actually applied. `results` was collected per viewport, and daylight is a
+  // property of the clock rather than of the viewport, so one decision covers them all.
+  const daylightNow = isDaylight();
+  const powerRequirement = daylightNow
+    ? 'site power tile never became non-zero'
+    : 'site power tile never became a number';
+
   const failures = [];
   for (const [name, s] of Object.entries(results)) {
     if (!s.live) failures.push(`${name}: MQTT feed never reported Live`);
-    if (!s.power) failures.push(`${name}: site power tile never became non-zero`);
+    if (!s.power) failures.push(`${name}: ${powerRequirement}`);
     if (s.cards === 0) failures.push(`${name}: no inverter cards rendered`);
     if (s.series === 0) failures.push(`${name}: chart drew no series`);
     if (s.rules === 0) failures.push(`${name}: no alert rules listed`);
