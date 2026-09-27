@@ -57,15 +57,28 @@ jobs:
       - name: Install dependencies
         run: uv sync --project sim --all-groups
 
+      # `cd sim` in every step below, not `--project sim`.
+      #
+      # `--project` selects the uv *environment*; it does not change the working directory.
+      # So `ruff check tests/` from the repo root looks for <root>/tests, which does not
+      # exist, and fails with a bare:
+      #
+      #     tests:1:1: E902 No such file or directory (os error 2)
+      #
+      # which says nothing about the code and reads like a broken checkout. The pytest
+      # steps fail the same way ("file or directory not found"), and [tool.pytest.ini_options]
+      # lives in sim/pyproject.toml, so from the root pytest sees neither testpaths nor
+      # pythonpath. This workflow shipped with that bug in all three steps and the first
+      # one to run took the job down with it. ci.yml documents the same trap inline.
       - name: Lint the sweep
-        run: uv run --project sim ruff check tests/ --output-format=concise
+        run: ( cd sim && uv run ruff check src/ tests/ --output-format=concise )
 
       - name: Full-year sweep
         # -v so a failure names the assertion, and the log carries the per-test durations
         # that show which invariant is the slow one.
-        run: uv run --project sim pytest tests/test_physics_sweep.py -v --durations=5
+        run: ( cd sim && uv run pytest tests/test_physics_sweep.py -v --durations=5 )
 
       - name: Single-day physics suite too
         # Cheap next to the sweep, and it is the suite that actually localises a regression
         # to a specific invariant. Run alongside so a nightly failure says *which* test.
-        run: uv run --project sim pytest tests/test_physics.py -q
+        run: ( cd sim && uv run pytest tests/test_physics.py -q )
